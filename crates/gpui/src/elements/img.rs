@@ -565,8 +565,10 @@ impl ImageSource {
     }
 }
 
+/// ImageDecoder Asset - Arc<Image>를 Arc<RenderImage>로 변환
+/// GPU 텍스처 정리를 위해 외부에서 접근 가능하도록 public으로 노출
 #[derive(Clone)]
-enum ImageDecoder {}
+pub enum ImageDecoder {}
 
 impl Asset for ImageDecoder {
     type Source = Arc<Image>;
