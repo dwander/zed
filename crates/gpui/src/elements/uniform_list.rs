@@ -51,6 +51,7 @@ where
         scroll_handle: None,
         sizing_behavior: ListSizingBehavior::default(),
         horizontal_sizing_behavior: ListHorizontalSizingBehavior::default(),
+        overscan: 0,
     }
 }
 
@@ -66,6 +67,8 @@ pub struct UniformList {
     scroll_handle: Option<UniformListScrollHandle>,
     sizing_behavior: ListSizingBehavior,
     horizontal_sizing_behavior: ListHorizontalSizingBehavior,
+    /// Number of extra rows to render above and below the visible area (for smoother scrolling)
+    overscan: usize,
 }
 
 /// Frame state used by the [UniformList].
@@ -464,8 +467,11 @@ impl Element for UniformList {
                         / item_height)
                         .ceil() as usize;
 
-                    let visible_range = first_visible_element_ix
-                        ..cmp::min(last_visible_element_ix, self.item_count);
+                    // Apply overscan: render extra rows above and below for smoother scrolling
+                    let first_with_overscan = first_visible_element_ix.saturating_sub(self.overscan);
+                    let last_with_overscan = cmp::min(last_visible_element_ix + self.overscan, self.item_count);
+
+                    let visible_range = first_with_overscan..last_with_overscan;
 
                     let items = if y_flipped {
                         let flipped_range = self.item_count.saturating_sub(visible_range.end)
@@ -640,6 +646,13 @@ impl UniformList {
     /// Adds a decoration element to the list.
     pub fn with_decoration(mut self, decoration: impl UniformListDecoration + 'static) -> Self {
         self.decorations.push(Box::new(decoration));
+        self
+    }
+
+    /// Sets the number of extra rows to render above and below the visible area.
+    /// This helps reduce flickering when scrolling by pre-rendering nearby items.
+    pub fn with_overscan(mut self, rows: usize) -> Self {
+        self.overscan = rows;
         self
     }
 
