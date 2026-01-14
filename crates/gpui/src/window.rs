@@ -3320,6 +3320,7 @@ impl Window {
                 content_mask,
                 tile,
                 opacity,
+                transformation: TransformationMatrix::unit(),
             });
         }
         Ok(())
@@ -3402,6 +3403,52 @@ impl Window {
         frame_index: usize,
         grayscale: bool,
     ) -> Result<()> {
+        self.paint_image_with_transformation(
+            bounds,
+            corner_radii,
+            data,
+            frame_index,
+            grayscale,
+            TransformationMatrix::unit(),
+        )
+    }
+
+    /// Paint an image into the scene with a transformation matrix.
+    ///
+    /// This method should only be called as part of the paint phase of element drawing.
+    pub fn paint_image_with_transformation(
+        &mut self,
+        bounds: Bounds<Pixels>,
+        corner_radii: Corners<Pixels>,
+        data: Arc<RenderImage>,
+        frame_index: usize,
+        grayscale: bool,
+        transformation: TransformationMatrix,
+    ) -> Result<()> {
+        self.paint_image_with_transformation_and_clip(
+            bounds,
+            corner_radii,
+            data,
+            frame_index,
+            grayscale,
+            transformation,
+            None,
+        )
+    }
+
+    /// Paint an image into the scene with a transformation matrix and custom clip bounds.
+    ///
+    /// This method should only be called as part of the paint phase of element drawing.
+    pub fn paint_image_with_transformation_and_clip(
+        &mut self,
+        bounds: Bounds<Pixels>,
+        corner_radii: Corners<Pixels>,
+        data: Arc<RenderImage>,
+        frame_index: usize,
+        grayscale: bool,
+        transformation: TransformationMatrix,
+        clip_bounds: Option<Bounds<Pixels>>,
+    ) -> Result<()> {
         self.invalidator.debug_assert_paint();
 
         let scale_factor = self.scale_factor();
@@ -3423,7 +3470,14 @@ impl Window {
                 )))
             })?
             .expect("Callback above only returns Some");
-        let content_mask = self.content_mask().scale(scale_factor);
+        // Use custom clip bounds if provided, otherwise use current content mask
+        let content_mask = if let Some(clip) = clip_bounds {
+            ContentMask {
+                bounds: clip.scale(scale_factor),
+            }
+        } else {
+            self.content_mask().scale(scale_factor)
+        };
         let corner_radii = corner_radii.scale(scale_factor);
         let opacity = self.element_opacity();
 
@@ -3438,6 +3492,7 @@ impl Window {
             corner_radii,
             tile,
             opacity,
+            transformation,
         });
         Ok(())
     }

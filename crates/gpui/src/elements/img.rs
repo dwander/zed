@@ -2,7 +2,7 @@ use crate::{
     AnyElement, AnyImageCache, App, Asset, AssetLogger, Bounds, DefiniteLength, Element, ElementId,
     Entity, GlobalElementId, Hitbox, Image, ImageCache, InspectorElementId, InteractiveElement,
     Interactivity, IntoElement, LayoutId, Length, ObjectFit, Pixels, RenderImage, Resource,
-    SharedString, SharedUri, StyleRefinement, Styled, Task, Window, px,
+    SharedString, SharedUri, StyleRefinement, Styled, Task, TransformationMatrix, Window, px,
 };
 use anyhow::{Context as _, Result};
 
@@ -129,6 +129,8 @@ pub struct ImageStyle {
     object_fit: ObjectFit,
     loading: Option<Box<dyn Fn() -> AnyElement>>,
     fallback: Option<Box<dyn Fn() -> AnyElement>>,
+    /// Rotation angle in radians (clockwise)
+    rotation: f32,
 }
 
 impl Default for ImageStyle {
@@ -138,6 +140,7 @@ impl Default for ImageStyle {
             object_fit: ObjectFit::Contain,
             loading: None,
             fallback: None,
+            rotation: 0.0,
         }
     }
 }
@@ -170,6 +173,13 @@ pub trait StyledImage: Sized {
     /// is still being loaded.
     fn with_loading(mut self, loading: impl Fn() -> AnyElement + 'static) -> Self {
         self.image_style().loading = Some(Box::new(loading));
+        self
+    }
+
+    /// Set the rotation angle in radians (clockwise).
+    /// Common values: 0 (none), PI/2 (90°), PI (180°), 3*PI/2 (270°)
+    fn rotation(mut self, radians: f32) -> Self {
+        self.image_style().rotation = radians;
         self
     }
 }
@@ -465,23 +475,117 @@ impl Element for Img {
                     window,
                     cx,
                 ) {
-                    let new_bounds = self
-                        .style
-                        .object_fit
-                        .get_bounds(bounds, data.size(layout_state.frame_index));
-                    let corner_radii = style
-                        .corner_radii
-                        .to_pixels(window.rem_size())
-                        .clamp_radii_for_quad_size(new_bounds.size);
-                    window
-                        .paint_image(
-                            new_bounds,
-                            corner_radii,
-                            data,
-                            layout_state.frame_index,
-                            self.style.grayscale,
-                        )
-                        .log_err();
+                    let rotation = self.style.rotation;
+                    let image_size = data.size(layout_state.frame_index);
+
+                    // No rotation - simple case
+                    if rotation == 0.0 {
+                        let new_bounds = self
+                            .style
+                            .object_fit
+                            .get_bounds(bounds, image_size);
+                        let corner_radii = style
+                            .corner_radii
+                            .to_pixels(window.rem_size())
+                            .clamp_radii_for_quad_size(new_bounds.size);
+
+                        window
+                            .paint_image_with_transformation(
+                                new_bounds,
+                                corner_radii,
+                                data,
+                                layout_state.frame_index,
+                                self.style.grayscale,
+                                TransformationMatrix::unit(),
+                            )
+                            .log_err();
+                    } else {
+                        // With rotation: need to render in a square area, rotate, then clip
+                        let is_90_or_270 = {
+                            let abs_rot = rotation.abs();
+                            let half_pi = std::f32::consts::PI / 2.0;
+                            (abs_rot - half_pi).abs() < 0.01 || (abs_rot - 3.0 * half_pi).abs() < 0.01
+                        };
+
+                        // For 90/270: the final displayed size has swapped dimensions
+                        let displayed_size = if is_90_or_270 {
+                            crate::Size {
+                                width: image_size.height,
+                                height: image_size.width,
+                            }
+                        } else {
+                            image_size
+                        };
+
+                        // Where the final rotated image should appear (this is the clip area)
+                        let display_bounds = self
+                            .style
+                            .object_fit
+                            .get_bounds(bounds, displayed_size);
+
+                        // Center point for rotation
+                        let center = crate::point(
+                            display_bounds.origin.x + display_bounds.size.width / 2.0,
+                            display_bounds.origin.y + display_bounds.size.height / 2.0,
+                        );
+
+                        // For 90/270 rotation:
+                        // We need to draw the texture at its correct aspect ratio such that
+                        // AFTER rotation it fills the display_bounds.
+                        //
+                        // If display_bounds is 737x1106 (portrait), after 90° rotation we need
+                        // the image to appear as 737 wide x 1106 tall.
+                        // So BEFORE rotation, we need to draw the texture as 1106 wide x 737 tall
+                        // (which matches the original image aspect ratio of ~1.5:1)
+                        let render_bounds = if is_90_or_270 {
+                            // The render size should be display_bounds with swapped dimensions
+                            // This ensures after rotation it fills display_bounds exactly
+                            let render_w = display_bounds.size.height.0; // 1106
+                            let render_h = display_bounds.size.width.0;  // 737
+
+                            crate::Bounds {
+                                origin: crate::point(
+                                    center.x - crate::Pixels(render_w / 2.0),
+                                    center.y - crate::Pixels(render_h / 2.0),
+                                ),
+                                size: crate::Size {
+                                    width: crate::Pixels(render_w),
+                                    height: crate::Pixels(render_h),
+                                },
+                            }
+                        } else {
+                            display_bounds
+                        };
+
+                        let corner_radii = style
+                            .corner_radii
+                            .to_pixels(window.rem_size())
+                            .clamp_radii_for_quad_size(display_bounds.size);
+
+                        // Transformation: rotate around the center
+                        let scale_factor = window.scale_factor();
+                        let center_x: f32 = center.x.into();
+                        let center_y: f32 = center.y.into();
+                        let center_x = center_x * scale_factor;
+                        let center_y = center_y * scale_factor;
+
+                        let transformation = TransformationMatrix::unit()
+                            .translate(crate::point(crate::ScaledPixels(center_x), crate::ScaledPixels(center_y)))
+                            .rotate(crate::Radians(rotation))
+                            .translate(crate::point(crate::ScaledPixels(-center_x), crate::ScaledPixels(-center_y)));
+
+                        window
+                            .paint_image_with_transformation_and_clip(
+                                render_bounds,
+                                corner_radii,
+                                data,
+                                layout_state.frame_index,
+                                self.style.grayscale,
+                                transformation,
+                                Some(display_bounds),  // Clip to final display area
+                            )
+                            .log_err();
+                    }
                 } else if let Some(replacement) = &mut layout_state.replacement {
                     replacement.paint(window, cx);
                 }
