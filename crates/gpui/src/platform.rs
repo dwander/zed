@@ -540,6 +540,12 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     fn set_edited(&mut self, _edited: bool) {}
     fn show_character_palette(&self) {}
     fn titlebar_double_click(&self) {}
+
+    /// 3D LUT 텍스처 설정 (색 변환용)
+    ///
+    /// ICC 프로파일 기반 색 변환을 GPU에서 수행하기 위한 LUT를 설정합니다.
+    /// LUT가 None이면 색 변환이 비활성화됩니다.
+    fn set_color_lut(&self, _lut_data: Option<&[u8]>, _lut_size: u8) {}
     fn on_move_tab_to_new_window(&self, _callback: Box<dyn FnMut()>) {}
     fn on_merge_all_windows(&self, _callback: Box<dyn FnMut()>) {}
     fn on_select_previous_tab(&self, _callback: Box<dyn FnMut()>) {}

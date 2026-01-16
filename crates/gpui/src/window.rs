@@ -1994,6 +1994,19 @@ impl Window {
             .set_background_appearance(background_appearance);
     }
 
+    /// 3D LUT 텍스처 설정 (ICC 프로파일 색 변환용)
+    ///
+    /// GPU 셰이더에서 실시간 색 변환을 수행하기 위한 3D LUT를 설정합니다.
+    /// 이미지 렌더링 시 자동으로 적용됩니다.
+    ///
+    /// # Arguments
+    /// * `lut_data` - RGBA 형식의 LUT 데이터. 2D 텍스처로 평탄화된 형태
+    ///                (width = size*size, height = size). None이면 색 변환 비활성화.
+    /// * `lut_size` - LUT 크기 (보통 17 또는 33)
+    pub fn set_color_lut(&self, lut_data: Option<&[u8]>, lut_size: u8) {
+        self.platform_window.set_color_lut(lut_data, lut_size);
+    }
+
     /// Mark the window as dirty at the platform level.
     pub fn set_window_edited(&mut self, edited: bool) {
         self.platform_window.set_edited(edited);

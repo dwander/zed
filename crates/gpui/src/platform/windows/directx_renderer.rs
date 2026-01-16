@@ -97,6 +97,11 @@ struct DirectXRenderPipelines {
 struct DirectXGlobalElements {
     global_params_buffer: Option<ID3D11Buffer>,
     sampler: Option<ID3D11SamplerState>,
+    // 3D LUT for color transformation
+    color_lut_texture: Option<ID3D11Texture2D>,
+    color_lut_view: Option<ID3D11ShaderResourceView>,
+    color_lut_sampler: Option<ID3D11SamplerState>,
+    color_lut_size: f32,
 }
 
 struct DirectComposition {
@@ -198,6 +203,8 @@ impl DirectXRenderer {
                 viewport_size: [resources.viewport.Width, resources.viewport.Height],
                 grayscale_enhanced_contrast: self.font_info.grayscale_enhanced_contrast,
                 subpixel_enhanced_contrast: self.font_info.subpixel_enhanced_contrast,
+                color_lut_size: self.globals.color_lut_size,
+                color_lut_padding: [0.0; 3],
             }],
         )?;
         unsafe {
@@ -211,6 +218,19 @@ impl DirectXRenderer {
             device_context
                 .OMSetRenderTargets(Some(slice::from_ref(&resources.render_target_view)), None);
             device_context.RSSetViewports(Some(slice::from_ref(&resources.viewport)));
+
+            // 3D LUT 텍스처 바인딩 (프레임 시작 시 한 번만 설정)
+            // t2 슬롯에 LUT 텍스처, s1 슬롯에 LUT 샘플러 바인딩
+            if self.globals.color_lut_view.is_some() {
+                device_context.PSSetShaderResources(
+                    2,
+                    Some(slice::from_ref(&self.globals.color_lut_view)),
+                );
+                device_context.PSSetSamplers(
+                    1,
+                    Some(slice::from_ref(&self.globals.color_lut_sampler)),
+                );
+            }
         }
         Ok(())
     }
@@ -670,6 +690,92 @@ impl DirectXRenderer {
         Ok(())
     }
 
+    /// 3D LUT 텍스처 설정 (색 변환용)
+    ///
+    /// # Arguments
+    /// * `lut_data` - RGBA 형식의 LUT 데이터 (size * size * size * 4 바이트)
+    ///                2D 텍스처로 평탄화: width = size*size, height = size
+    /// * `lut_size` - LUT 크기 (보통 17 또는 33)
+    ///
+    /// LUT가 None이면 색 변환이 비활성화됩니다.
+    pub(crate) fn set_color_lut(&mut self, lut_data: Option<&[u8]>, lut_size: u8) -> Result<()> {
+        let devices = self.devices.as_ref().context("devices missing")?;
+
+        // 기존 LUT 리소스 해제
+        self.globals.color_lut_texture = None;
+        self.globals.color_lut_view = None;
+        self.globals.color_lut_size = 0.0;
+
+        if let Some(data) = lut_data {
+            let size = lut_size as u32;
+            let tex_width = size * size;  // R + G*size
+            let tex_height = size;        // B
+
+            // 2D 텍스처 생성
+            let texture = unsafe {
+                let desc = D3D11_TEXTURE2D_DESC {
+                    Width: tex_width,
+                    Height: tex_height,
+                    MipLevels: 1,
+                    ArraySize: 1,
+                    Format: DXGI_FORMAT_R8G8B8A8_UNORM,
+                    SampleDesc: DXGI_SAMPLE_DESC {
+                        Count: 1,
+                        Quality: 0,
+                    },
+                    Usage: D3D11_USAGE_DEFAULT,
+                    BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
+                    CPUAccessFlags: 0,
+                    MiscFlags: 0,
+                };
+
+                let init_data = D3D11_SUBRESOURCE_DATA {
+                    pSysMem: data.as_ptr() as *const _,
+                    SysMemPitch: tex_width * 4,
+                    SysMemSlicePitch: 0,
+                };
+
+                let mut texture = None;
+                devices
+                    .device
+                    .CreateTexture2D(&desc, Some(&init_data), Some(&mut texture))
+                    .context("Creating LUT texture")?;
+                texture
+            };
+
+            // Shader Resource View 생성
+            let view = unsafe {
+                let srv_desc = D3D11_SHADER_RESOURCE_VIEW_DESC {
+                    Format: DXGI_FORMAT_R8G8B8A8_UNORM,
+                    ViewDimension: D3D11_SRV_DIMENSION_TEXTURE2D,
+                    Anonymous: D3D11_SHADER_RESOURCE_VIEW_DESC_0 {
+                        Texture2D: D3D11_TEX2D_SRV {
+                            MostDetailedMip: 0,
+                            MipLevels: 1,
+                        },
+                    },
+                };
+
+                let mut view = None;
+                devices
+                    .device
+                    .CreateShaderResourceView(
+                        texture.as_ref().unwrap(),
+                        Some(&srv_desc),
+                        Some(&mut view),
+                    )
+                    .context("Creating LUT SRV")?;
+                view
+            };
+
+            self.globals.color_lut_texture = texture;
+            self.globals.color_lut_view = view;
+            self.globals.color_lut_size = size as f32;
+        }
+
+        Ok(())
+    }
+
     pub(crate) fn gpu_specs(&self) -> Result<GpuSpecs> {
         let devices = self.devices.as_ref().context("devices missing")?;
         let desc = unsafe { devices.adapter.GetDesc1() }?;
@@ -918,9 +1024,32 @@ impl DirectXGlobalElements {
             output
         };
 
+        // LUT용 샘플러 (Linear 필터링으로 trilinear interpolation 효과)
+        let color_lut_sampler = unsafe {
+            let desc = D3D11_SAMPLER_DESC {
+                Filter: D3D11_FILTER_MIN_MAG_MIP_LINEAR,
+                AddressU: D3D11_TEXTURE_ADDRESS_CLAMP,
+                AddressV: D3D11_TEXTURE_ADDRESS_CLAMP,
+                AddressW: D3D11_TEXTURE_ADDRESS_CLAMP,
+                MipLODBias: 0.0,
+                MaxAnisotropy: 1,
+                ComparisonFunc: D3D11_COMPARISON_ALWAYS,
+                BorderColor: [0.0; 4],
+                MinLOD: 0.0,
+                MaxLOD: D3D11_FLOAT32_MAX,
+            };
+            let mut output = None;
+            device.CreateSamplerState(&desc, Some(&mut output))?;
+            output
+        };
+
         Ok(Self {
             global_params_buffer,
             sampler,
+            color_lut_texture: None,
+            color_lut_view: None,
+            color_lut_sampler,
+            color_lut_size: 0.0,
         })
     }
 }
@@ -932,6 +1061,9 @@ struct GlobalParams {
     viewport_size: [f32; 2],
     grayscale_enhanced_contrast: f32,
     subpixel_enhanced_contrast: f32,
+    // 3D LUT for color transformation
+    color_lut_size: f32,         // LUT 크기 (0이면 비활성화)
+    color_lut_padding: [f32; 3], // 16바이트 정렬용
 }
 
 struct PipelineState<T> {

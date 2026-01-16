@@ -5,10 +5,16 @@ cbuffer GlobalParams: register(b0) {
     float2 global_viewport_size;
     float grayscale_enhanced_contrast;
     float subpixel_enhanced_contrast;
+    // 3D LUT for color transformation
+    float color_lut_size;       // LUT 크기 (0이면 비활성화)
+    float3 color_lut_padding;   // 16바이트 정렬용
 };
 
 Texture2D<float4> t_sprite: register(t0);
 SamplerState s_sprite: register(s0);
+// 3D LUT texture (flattened as 2D: width = size*size, height = size)
+Texture2D<float4> t_color_lut: register(t2);
+SamplerState s_color_lut: register(s1);
 
 struct SubpixelSpriteFragmentOutput {
     float4 foreground : SV_Target0;
@@ -1187,6 +1193,53 @@ PolychromeSpriteVertexOutput polychrome_sprite_vertex(uint vertex_id: SV_VertexI
     return output;
 }
 
+// 3D LUT 색 변환 적용 (trilinear interpolation)
+// LUT는 2D 텍스처로 평탄화: width = size*size, height = size
+// 인덱싱: (r, g, b) -> x = r + g*size, y = b
+float3 apply_color_lut_3d(float3 color, float lut_size) {
+    if (lut_size <= 1.0) return color;
+
+    float size = lut_size;
+    float size_m1 = size - 1.0;
+
+    // RGB를 [0, size-1] 범위로 스케일
+    float3 scaled = saturate(color) * size_m1;
+
+    // 하한/상한 인덱스
+    float3 floor_idx = floor(scaled);
+    float3 ceil_idx = min(floor_idx + 1.0, size_m1);
+
+    // 보간 가중치
+    float3 frac = scaled - floor_idx;
+
+    // 8개 코너 샘플링을 위한 헬퍼
+    // UV 좌표: x = (r + g*size + 0.5) / (size*size), y = (b + 0.5) / size
+    #define SAMPLE_LUT(r, g, b) t_color_lut.SampleLevel(s_color_lut, float2((r + g * size + 0.5) / (size * size), (b + 0.5) / size), 0).rgb
+
+    // 8개 코너
+    float3 c000 = SAMPLE_LUT(floor_idx.r, floor_idx.g, floor_idx.b);
+    float3 c100 = SAMPLE_LUT(ceil_idx.r, floor_idx.g, floor_idx.b);
+    float3 c010 = SAMPLE_LUT(floor_idx.r, ceil_idx.g, floor_idx.b);
+    float3 c110 = SAMPLE_LUT(ceil_idx.r, ceil_idx.g, floor_idx.b);
+    float3 c001 = SAMPLE_LUT(floor_idx.r, floor_idx.g, ceil_idx.b);
+    float3 c101 = SAMPLE_LUT(ceil_idx.r, floor_idx.g, ceil_idx.b);
+    float3 c011 = SAMPLE_LUT(floor_idx.r, ceil_idx.g, ceil_idx.b);
+    float3 c111 = SAMPLE_LUT(ceil_idx.r, ceil_idx.g, ceil_idx.b);
+
+    #undef SAMPLE_LUT
+
+    // Trilinear interpolation
+    float3 c00 = lerp(c000, c100, frac.r);
+    float3 c01 = lerp(c001, c101, frac.r);
+    float3 c10 = lerp(c010, c110, frac.r);
+    float3 c11 = lerp(c011, c111, frac.r);
+
+    float3 c0 = lerp(c00, c10, frac.g);
+    float3 c1 = lerp(c01, c11, frac.g);
+
+    return lerp(c0, c1, frac.b);
+}
+
 float4 polychrome_sprite_fragment(PolychromeSpriteFragmentInput input): SV_Target {
     PolychromeSprite sprite = poly_sprites[input.sprite_id];
 
@@ -1211,6 +1264,12 @@ float4 polychrome_sprite_fragment(PolychromeSpriteFragmentInput input): SV_Targe
     float distance = is_transformed ? -1.0 : quad_sdf(input.position.xy, sprite.bounds, sprite.corner_radii);
 
     float4 color = sample;
+
+    // 3D LUT 색 변환 적용 (전역 설정으로 활성화된 경우)
+    if (color_lut_size > 1.0) {
+        color.rgb = apply_color_lut_3d(color.rgb, color_lut_size);
+    }
+
     if ((sprite.grayscale & 0xFFu) != 0u) {
         float3 grayscale = dot(color.rgb, GRAYSCALE_FACTORS);
         color = float4(grayscale, sample.a);

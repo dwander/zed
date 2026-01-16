@@ -798,6 +798,15 @@ impl PlatformWindow for WindowsWindow {
         true
     }
 
+    fn set_color_lut(&self, lut_data: Option<&[u8]>, lut_size: u8) {
+        self.state
+            .renderer
+            .borrow_mut()
+            .set_color_lut(lut_data, lut_size)
+            .inspect_err(|e| log::error!("Failed to set color LUT: {e}"))
+            .ok();
+    }
+
     fn set_title(&mut self, title: &str) {
         unsafe { SetWindowTextW(self.0.hwnd, &HSTRING::from(title)) }
             .inspect_err(|e| log::error!("Set title failed: {e}"))
