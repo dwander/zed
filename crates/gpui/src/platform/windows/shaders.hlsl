@@ -1189,7 +1189,17 @@ PolychromeSpriteVertexOutput polychrome_sprite_vertex(uint vertex_id: SV_VertexI
 
 float4 polychrome_sprite_fragment(PolychromeSpriteFragmentInput input): SV_Target {
     PolychromeSprite sprite = poly_sprites[input.sprite_id];
-    float4 sample = t_sprite.Sample(s_sprite, input.tile_position);
+
+    // Linear 샘플링 시 타일 경계에서 이웃 타일 픽셀 블렌딩 방지를 위해
+    // UV 좌표를 타일 내부로 0.5 텍셀만큼 클램핑
+    float2 atlas_size;
+    t_sprite.GetDimensions(atlas_size.x, atlas_size.y);
+    float2 half_texel = 0.5 / atlas_size;
+    float2 tile_min = float2(sprite.tile.bounds.origin) / atlas_size + half_texel;
+    float2 tile_max = float2(sprite.tile.bounds.origin + sprite.tile.bounds.size) / atlas_size - half_texel;
+    float2 clamped_uv = clamp(input.tile_position, tile_min, tile_max);
+
+    float4 sample = t_sprite.Sample(s_sprite, clamped_uv);
 
     // Check if transformation is not identity (has rotation/scale)
     // If transformed, skip quad_sdf as it doesn't account for rotation
