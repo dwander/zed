@@ -117,11 +117,14 @@ pub(crate) fn load_cursor(style: CursorStyle) -> Option<HCURSOR> {
     static HAND: OnceLock<SafeCursor> = OnceLock::new();
     static SIZEWE: OnceLock<SafeCursor> = OnceLock::new();
     static SIZENS: OnceLock<SafeCursor> = OnceLock::new();
+    static SIZEALL: OnceLock<SafeCursor> = OnceLock::new();
     static NO: OnceLock<SafeCursor> = OnceLock::new();
     let (lock, name) = match style {
         CursorStyle::IBeam | CursorStyle::IBeamCursorForVerticalLayout => (&IBEAM, IDC_IBEAM),
         CursorStyle::Crosshair => (&CROSS, IDC_CROSS),
         CursorStyle::PointingHand | CursorStyle::DragLink => (&HAND, IDC_HAND),
+        // Windows에 grab/grabbing 커서가 없어 네방향 화살표로 대체
+        CursorStyle::OpenHand | CursorStyle::ClosedHand => (&SIZEALL, IDC_SIZEALL),
         CursorStyle::ResizeLeft
         | CursorStyle::ResizeRight
         | CursorStyle::ResizeLeftRight
