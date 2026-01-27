@@ -2410,7 +2410,7 @@ fn editor_page() -> SettingsPage {
         ]
     }
 
-    fn vim_settings_section() -> [SettingsPageItem; 11] {
+    fn vim_settings_section() -> [SettingsPageItem; 12] {
         [
             SettingsPageItem::SectionHeader("Vim"),
             SettingsPageItem::SettingItem(SettingItem {
@@ -2479,6 +2479,19 @@ fn editor_page() -> SettingsPage {
                             .vim
                             .get_or_insert_default()
                             .use_smartcase_find = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Global Substitution Default",
+                description: "When enabled, the :substitute command replaces all matches in a line by default. The 'g' flag then toggles this behavior.",
+                field: Box::new(SettingField {
+                    json_path: Some("vim.gdefault"),
+                    pick: |settings_content| settings_content.vim.as_ref()?.gdefault.as_ref(),
+                    write: |settings_content, value| {
+                        settings_content.vim.get_or_insert_default().gdefault = value;
                     },
                 }),
                 metadata: None,
@@ -6830,7 +6843,7 @@ fn ai_page() -> SettingsPage {
         ]
     }
 
-    fn agent_configuration_section() -> [SettingsPageItem; 11] {
+    fn agent_configuration_section() -> [SettingsPageItem; 12] {
         [
             SettingsPageItem::SectionHeader("Agent Configuration"),
             SettingsPageItem::SettingItem(SettingItem {
@@ -6970,6 +6983,28 @@ fn ai_page() -> SettingsPage {
                             .agent
                             .get_or_insert_default()
                             .expand_terminal_card = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Cancel Generation On Terminal Stop",
+                description: "Whether clicking the stop button on a running terminal tool should also cancel the agent's generation. Note that this only applies to the stop button, not to ctrl+c inside the terminal.",
+                field: Box::new(SettingField {
+                    json_path: Some("agent.cancel_generation_on_terminal_stop"),
+                    pick: |settings_content| {
+                        settings_content
+                            .agent
+                            .as_ref()?
+                            .cancel_generation_on_terminal_stop
+                            .as_ref()
+                    },
+                    write: |settings_content, value| {
+                        settings_content
+                            .agent
+                            .get_or_insert_default()
+                            .cancel_generation_on_terminal_stop = value;
                     },
                 }),
                 metadata: None,
