@@ -537,6 +537,7 @@ fn init_renderers(cx: &mut App) {
         .add_basic_renderer::<settings::WindowDecorations>(render_dropdown)
         .add_basic_renderer::<settings::FontSize>(render_editable_number_field)
         .add_basic_renderer::<settings::OllamaModelName>(render_ollama_model_picker)
+        .add_basic_renderer::<settings::SemanticTokens>(render_dropdown)
         // please semicolon stay on next line
         ;
 }
@@ -3300,6 +3301,7 @@ impl SettingsWindow {
             .child(
                 div()
                     .flex_1()
+                    .min_h_0()
                     .size_full()
                     .tab_group()
                     .tab_index(CONTENT_GROUP_TAB_INDEX)
