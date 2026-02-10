@@ -514,13 +514,14 @@ dependencies = [
 [[package]]
 name = "alacritty_terminal"
 version = "0.25.1"
-source = "git+https://github.com/zed-industries/alacritty?rev=936aee8761a17affc84ab418ae21306c27c26221#936aee8761a17affc84ab418ae21306c27c26221"
+source = "git+https://github.com/zed-industries/alacritty?rev=9d9640d4#9d9640d4e56d67a09d049f9c0a300aae08d4f61e"
 dependencies = [
  "base64 0.22.1",
  "bitflags 2.10.0",
  "home",
  "libc",
  "log",
+ "mach2 0.5.0",
  "miow",
  "parking_lot",
  "piper",
@@ -15254,6 +15255,7 @@ dependencies = [
  "pretty_assertions",
  "project",
  "recent_projects",
+ "regex",
  "release_channel",
  "schemars",
  "search",
@@ -15261,6 +15263,7 @@ dependencies = [
  "serde_json",
  "session",
  "settings",
+ "shell_command_parser",
  "strum 0.27.2",
  "telemetry",
  "theme",
@@ -17855,9 +17858,9 @@ dependencies = [
 
 [[package]]
 name = "tree-sitter-go"
-version = "0.23.4"
+version = "0.25.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b13d476345220dbe600147dd444165c5791bf85ef53e28acbedd46112ee18431"
+checksum = "c8560a4d2f835cc0d4d2c2e03cbd0dde2f6114b43bc491164238d333e28b16ea"
 dependencies = [
  "cc",
  "tree-sitter-language",
