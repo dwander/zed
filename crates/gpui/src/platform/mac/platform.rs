@@ -1012,6 +1012,7 @@ impl Platform for MacPlatform {
                 CursorStyle::DragCopy => msg_send![class!(NSCursor), dragCopyCursor],
                 CursorStyle::ContextualMenu => msg_send![class!(NSCursor), contextualMenuCursor],
                 CursorStyle::None => unreachable!(),
+                CursorStyle::Custom(_) => msg_send![class!(NSCursor), arrowCursor],
             };
 
             let old_cursor: id = msg_send![class!(NSCursor), currentCursor];

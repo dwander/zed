@@ -1,4 +1,5 @@
-use std::sync::OnceLock;
+use std::collections::HashMap;
+use std::sync::{LazyLock, Mutex, OnceLock};
 
 use ::util::ResultExt;
 use anyhow::Context;
@@ -9,13 +10,22 @@ use windows::{
     },
     Wdk::System::SystemServices::RtlGetVersion,
     Win32::{
-        Foundation::*, Graphics::Dwm::*, System::LibraryLoader::LoadLibraryA,
+        Foundation::*,
+        Graphics::{
+            Dwm::*,
+            Gdi::{
+                CreateBitmap, CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC,
+                ReleaseDC, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS,
+            },
+        },
+        System::LibraryLoader::LoadLibraryA,
         UI::WindowsAndMessaging::*,
     },
     core::{BOOL, HSTRING, PCSTR},
 };
 
 use crate::*;
+use crate::custom_cursor::get_custom_cursor;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum WindowsVersion {
@@ -139,6 +149,7 @@ pub(crate) fn load_cursor(style: CursorStyle) -> Option<HCURSOR> {
         CursorStyle::ResizeUpRightDownLeft => (&SIZENESW, IDC_SIZENESW),
         CursorStyle::OperationNotAllowed => (&NO, IDC_NO),
         CursorStyle::None => return None,
+        CursorStyle::Custom(id) => return load_custom_cursor(id),
         _ => (&ARROW, IDC_ARROW),
     };
     Some(
@@ -152,6 +163,119 @@ pub(crate) fn load_cursor(style: CursorStyle) -> Option<HCURSOR> {
             .into()
         })),
     )
+}
+
+/// Cache for custom SVG-based cursors, keyed by their numeric ID.
+static CUSTOM_CURSORS: LazyLock<Mutex<HashMap<u16, SafeCursor>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Load a custom cursor from the global registry, rendering its SVG to an HCURSOR.
+/// The result is cached so the SVG is only rendered once per cursor ID.
+fn load_custom_cursor(id: u16) -> Option<HCURSOR> {
+    // Check cache first
+    {
+        let cache = CUSTOM_CURSORS.lock().unwrap();
+        if let Some(cursor) = cache.get(&id) {
+            return Some(**cursor);
+        }
+    }
+
+    let cursor_def = get_custom_cursor(id)?;
+
+    // Query system cursor size (DPI-aware: 32 at 100%, 48 at 150%, etc.)
+    let cursor_size = unsafe { GetSystemMetrics(SM_CXCURSOR) } as u32;
+    let cursor_size = cursor_size.max(16); // Sanity minimum
+
+    // Parse and render SVG
+    let svg_tree = usvg::Tree::from_data(cursor_def.svg_bytes, &usvg::Options::default()).ok()?;
+    let svg_size = svg_tree.size();
+    let scale = cursor_size as f32 / svg_size.width().max(svg_size.height());
+
+    let width = (svg_size.width() * scale).ceil() as u32;
+    let height = (svg_size.height() * scale).ceil() as u32;
+
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(width, height)?;
+    let transform = resvg::tiny_skia::Transform::from_scale(scale, scale);
+    resvg::render(&svg_tree, transform, &mut pixmap.as_mut());
+
+    // Convert RGBA premultiplied → BGRA non-premultiplied for Windows
+    let mut bgra_data: Vec<u8> = pixmap.take();
+    for pixel in bgra_data.chunks_exact_mut(4) {
+        let a = pixel[3] as f32;
+        if a > 0.0 {
+            let inv_a = 255.0 / a;
+            let r = (pixel[0] as f32 * inv_a).min(255.0) as u8;
+            let g = (pixel[1] as f32 * inv_a).min(255.0) as u8;
+            let b = (pixel[2] as f32 * inv_a).min(255.0) as u8;
+            // RGBA → BGRA
+            pixel[0] = b;
+            pixel[1] = g;
+            pixel[2] = r;
+        } else {
+            // Fully transparent pixel: swap R and B anyway
+            pixel.swap(0, 2);
+        }
+    }
+
+    // Calculate hotspot in pixel coordinates
+    let hotspot_x = (cursor_def.hotspot_x * width as f32) as u32;
+    let hotspot_y = (cursor_def.hotspot_y * height as f32) as u32;
+
+    // Create HCURSOR via Windows API
+    let hcursor = unsafe {
+        let hdc_screen = GetDC(None);
+
+        // Set up BITMAPINFO for a top-down 32-bit BGRA bitmap
+        let bi = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER {
+                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: width as i32,
+                biHeight: -(height as i32), // Negative = top-down
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: BI_RGB.0 as u32,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let hdc_mem = CreateCompatibleDC(Some(hdc_screen));
+        let mut bits: *mut std::ffi::c_void = std::ptr::null_mut();
+        let color_bitmap =
+            CreateDIBSection(Some(hdc_mem), &bi, DIB_RGB_COLORS, &mut bits, None, 0).ok()?;
+
+        // Copy rendered pixel data into the bitmap
+        std::ptr::copy_nonoverlapping(bgra_data.as_ptr(), bits as *mut u8, bgra_data.len());
+
+        // Create a 1-bit mask bitmap (all zeros = fully visible with 32-bit color)
+        let mask_bitmap = CreateBitmap(width as i32, height as i32, 1, 1, None);
+
+        let icon_info = ICONINFO {
+            fIcon: BOOL::from(false), // false = cursor
+            xHotspot: hotspot_x,
+            yHotspot: hotspot_y,
+            hbmMask: mask_bitmap,
+            hbmColor: color_bitmap,
+        };
+
+        let hicon = CreateIconIndirect(&icon_info).ok()?;
+
+        // Clean up GDI objects
+        let _ = DeleteObject(color_bitmap.into());
+        let _ = DeleteObject(mask_bitmap.into());
+        let _ = DeleteDC(hdc_mem);
+        ReleaseDC(None, hdc_screen);
+
+        HCURSOR(hicon.0)
+    };
+
+    // Cache the cursor
+    {
+        let mut cache = CUSTOM_CURSORS.lock().unwrap();
+        cache.insert(id, hcursor.into());
+    }
+
+    Some(hcursor)
 }
 
 /// This function is used to configure the dark mode for the window built-in title bar.

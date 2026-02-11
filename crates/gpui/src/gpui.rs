@@ -15,6 +15,7 @@ mod asset_cache;
 mod assets;
 mod bounds_tree;
 mod color;
+mod custom_cursor;
 /// The default colors used by GPUI.
 pub mod colors;
 mod element;
@@ -91,6 +92,7 @@ pub use interactive::*;
 use key_dispatch::*;
 pub use keymap::*;
 pub use path_builder::*;
+pub use custom_cursor::*;
 pub use platform::*;
 pub use profiler::*;
 #[cfg(any(target_os = "windows", target_os = "linux"))]

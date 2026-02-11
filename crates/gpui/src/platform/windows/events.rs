@@ -1046,16 +1046,18 @@ impl WindowsWindowInner {
     }
 
     fn handle_cursor_changed(&self, lparam: LPARAM) -> Option<isize> {
-        let had_cursor = self.state.current_cursor.get().is_some();
+        let old_cursor = self.state.current_cursor.get();
 
-        self.state.current_cursor.set(if lparam.0 == 0 {
+        let new_cursor = if lparam.0 == 0 {
             None
         } else {
             Some(HCURSOR(lparam.0 as _))
-        });
+        };
 
-        if had_cursor != self.state.current_cursor.get().is_some() {
-            unsafe { SetCursor(self.state.current_cursor.get()) };
+        self.state.current_cursor.set(new_cursor);
+
+        if old_cursor.map(|c| c.0) != new_cursor.map(|c| c.0) {
+            unsafe { SetCursor(new_cursor) };
         }
 
         Some(0)

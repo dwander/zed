@@ -44,6 +44,7 @@ impl CursorStyle {
                 #[cfg(not(debug_assertions))]
                 Shape::Default
             }
+            CursorStyle::Custom(_) => Shape::Default,
         }
     }
 }

@@ -1652,6 +1652,10 @@ pub enum CursorStyle {
 
     /// Hide the cursor
     None,
+
+    /// A custom cursor identified by a numeric ID.
+    /// Register custom cursors with [`register_custom_cursor`] before use.
+    Custom(u16),
 }
 
 /// A clipboard item that should be copied to the clipboard

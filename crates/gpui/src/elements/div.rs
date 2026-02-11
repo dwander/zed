@@ -17,13 +17,13 @@
 
 use crate::{
     AbsoluteLength, Action, AnyDrag, AnyElement, AnyTooltip, AnyView, App, Bounds, ClickEvent,
-    DispatchPhase, Display, Element, ElementId, Entity, FocusHandle, Global, GlobalElementId,
-    Hitbox, HitboxBehavior, HitboxId, InspectorElementId, IntoElement, IsZero, KeyContext,
-    KeyDownEvent, KeyUpEvent, KeyboardButton, KeyboardClickEvent, LayoutId, ModifiersChangedEvent,
-    MouseButton, MouseClickEvent, MouseDownEvent, MouseMoveEvent, MousePressureEvent, MouseUpEvent,
-    Overflow, ParentElement, Pixels, Point, Render, ScrollWheelEvent, SharedString, Size, Style,
-    StyleRefinement, Styled, Task, TooltipId, Visibility, Window, WindowControlArea, point, px,
-    size,
+    CursorStyle, DispatchPhase, Display, Element, ElementId, Entity, FocusHandle, Global,
+    GlobalElementId, Hitbox, HitboxBehavior, HitboxId, InspectorElementId, IntoElement, IsZero,
+    KeyContext, KeyDownEvent, KeyUpEvent, KeyboardButton, KeyboardClickEvent, LayoutId,
+    ModifiersChangedEvent, MouseButton, MouseClickEvent, MouseDownEvent, MouseMoveEvent,
+    MousePressureEvent, MouseUpEvent, Overflow, ParentElement, Pixels, Point, Render,
+    ScrollWheelEvent, SharedString, Size, Style, StyleRefinement, Styled, Task, TooltipId,
+    Visibility, Window, WindowControlArea, point, px, size,
 };
 use collections::HashMap;
 use refineable::Refineable;
@@ -561,6 +561,15 @@ impl Interactivity {
                 constructor(value.downcast_ref().unwrap(), offset, window, cx).into()
             }),
         ));
+    }
+
+    /// Set the cursor style to use during a drag operation initiated from this element.
+    /// If not set, the element's regular cursor style will be used.
+    pub fn drag_cursor(&mut self, style: CursorStyle)
+    where
+        Self: Sized,
+    {
+        self.drag_cursor_style = Some(style);
     }
 
     /// Bind the given callback on the hover start and end events of this element. Note that the boolean
@@ -1240,6 +1249,14 @@ pub trait StatefulInteractiveElement: InteractiveElement {
         self
     }
 
+    /// Set the cursor style to use during a drag operation initiated from this element.
+    /// If not set, the element's regular cursor style will be used.
+    /// The fluent API equivalent to [`Interactivity::drag_cursor`].
+    fn drag_cursor(mut self, style: CursorStyle) -> Self {
+        self.interactivity().drag_cursor(style);
+        self
+    }
+
     /// Bind the given callback on the hover start and end events of this element. Note that the boolean
     /// passed to the callback is true when the hover starts and false when it ends.
     /// The fluent API equivalent to [`Interactivity::on_hover`].
@@ -1653,6 +1670,7 @@ pub struct Interactivity {
     pub(crate) click_listeners: Vec<ClickListener>,
     pub(crate) aux_click_listeners: Vec<ClickListener>,
     pub(crate) drag_listener: Option<(Arc<dyn Any>, DragListener)>,
+    pub(crate) drag_cursor_style: Option<CursorStyle>,
     pub(crate) hover_listener: Option<Box<dyn Fn(&bool, &mut Window, &mut App)>>,
     pub(crate) tooltip_builder: Option<TooltipBuilder>,
     pub(crate) window_control: Option<WindowControlArea>,
@@ -2263,7 +2281,7 @@ impl Interactivity {
             }
         }
 
-        let drag_cursor_style = self.base_style.as_ref().mouse_cursor;
+        let drag_cursor_style = self.drag_cursor_style.or(self.base_style.as_ref().mouse_cursor);
 
         let mut drag_listener = mem::take(&mut self.drag_listener);
         let drop_listeners = mem::take(&mut self.drop_listeners);

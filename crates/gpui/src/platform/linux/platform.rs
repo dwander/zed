@@ -780,6 +780,7 @@ impl CursorStyle {
                 #[cfg(not(debug_assertions))]
                 &[DEFAULT_CURSOR_ICON_NAME]
             }
+            CursorStyle::Custom(_) => &[DEFAULT_CURSOR_ICON_NAME],
         }
     }
 }
