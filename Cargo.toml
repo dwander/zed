@@ -544,7 +544,10 @@ http = "1.1"
 http-body = "1.0"
 hyper = "0.14"
 ignore = "0.4.22"
-image = "0.25.1"
+image = { version = "0.25.1", default-features = false, features = [
+    "rayon", "bmp", "dds", "exr", "ff", "gif", "hdr", "ico",
+    "jpeg", "png", "pnm", "qoi", "tga", "tiff", "webp",
+] }
 imara-diff = "0.1.8"
 indexmap = { version = "2.7.0", features = ["serde"] }
 indoc = "2"
