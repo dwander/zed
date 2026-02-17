@@ -393,6 +393,7 @@ pub struct AgentModelInfo {
     pub description: Option<SharedString>,
     pub icon: Option<AgentModelIcon>,
     pub is_latest: bool,
+    pub cost: Option<SharedString>,
 }
 
 impl From<acp::ModelInfo> for AgentModelInfo {
@@ -403,6 +404,7 @@ impl From<acp::ModelInfo> for AgentModelInfo {
             description: info.description.map(|desc| desc.into()),
             icon: None,
             is_latest: false,
+            cost: None,
         }
     }
 }
@@ -475,6 +477,11 @@ impl PermissionOptions {
 
     pub fn allow_once_option_id(&self) -> Option<acp::PermissionOptionId> {
         self.first_option_of_kind(acp::PermissionOptionKind::AllowOnce)
+            .map(|option| option.option_id.clone())
+    }
+
+    pub fn deny_once_option_id(&self) -> Option<acp::PermissionOptionId> {
+        self.first_option_of_kind(acp::PermissionOptionKind::RejectOnce)
             .map(|option| option.option_id.clone())
     }
 }
@@ -689,7 +696,6 @@ mod test_support {
                                     thread.request_tool_call_authorization(
                                         tool_call.clone().into(),
                                         options.clone(),
-                                        false,
                                         cx,
                                     )
                                 })??
@@ -723,6 +729,14 @@ mod test_support {
             }
         }
 
+        fn set_title(
+            &self,
+            _session_id: &acp::SessionId,
+            _cx: &App,
+        ) -> Option<Rc<dyn AgentSessionSetTitle>> {
+            Some(Rc::new(StubAgentSessionSetTitle))
+        }
+
         fn truncate(
             &self,
             _session_id: &agent_client_protocol::SessionId,
@@ -733,6 +747,14 @@ mod test_support {
 
         fn into_any(self: Rc<Self>) -> Rc<dyn Any> {
             self
+        }
+    }
+
+    struct StubAgentSessionSetTitle;
+
+    impl AgentSessionSetTitle for StubAgentSessionSetTitle {
+        fn run(&self, _title: SharedString, _cx: &mut App) -> Task<Result<()>> {
+            Task::ready(Ok(()))
         }
     }
 
@@ -758,6 +780,7 @@ mod test_support {
                     description: Some("A stub model for visual testing".into()),
                     icon: Some(AgentModelIcon::Named(ui::IconName::ZedAssistant)),
                     is_latest: false,
+                    cost: None,
                 })),
             }
         }
