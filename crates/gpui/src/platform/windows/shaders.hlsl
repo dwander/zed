@@ -35,6 +35,7 @@ struct Corners {
 
 struct ContentMask {
     Bounds bounds;
+    Bounds corner_radii_bounds;
     Corners corner_radii;
 };
 
@@ -328,7 +329,7 @@ float clip_round_mask(float2 position, ContentMask mask) {
     if (!has_radii) {
         return 1.0;
     }
-    float d = quad_sdf(position, mask.bounds, mask.corner_radii);
+    float d = quad_sdf(position, mask.corner_radii_bounds, mask.corner_radii);
     return saturate(0.5 - d);
 }
 

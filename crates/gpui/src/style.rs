@@ -608,8 +608,13 @@ impl Style {
                     .corner_radii
                     .to_pixels(rem_size);
 
+                // corner_radii_bounds = the bounds where corner_radii were set (for SDF eval).
+                // Only meaningful when corner_radii are non-zero.
+                let corner_radii_bounds = bounds;
+
                 Some(ContentMask {
                     bounds,
+                    corner_radii_bounds,
                     corner_radii,
                 })
             }
