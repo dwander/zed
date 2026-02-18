@@ -157,6 +157,10 @@ impl WindowInvalidator {
         self.inner.borrow().draw_phase == DrawPhase::None
     }
 
+    pub fn has_dirty_views(&self) -> bool {
+        !self.inner.borrow().dirty_views.is_empty()
+    }
+
     #[track_caller]
     pub fn debug_assert_paint(&self) {
         debug_assert!(
@@ -2243,6 +2247,16 @@ impl Window {
         self.reset_cursor_style(cx);
         self.refreshing = false;
         self.invalidator.set_phase(DrawPhase::None);
+
+        // If any views were invalidated during the draw (e.g. from on_prepaint
+        // detecting a viewport size change after window maximize/resize), we need
+        // to mark the window dirty again so the next frame picks up those changes.
+        // During draw, invalidate_view() adds to dirty_views but cannot set
+        // dirty=true because draw_phase != None.
+        if self.invalidator.has_dirty_views() {
+            self.invalidator.set_dirty(true);
+        }
+
         self.needs_present.set(true);
 
         ArenaClearNeeded::new(&cx.element_arena)
