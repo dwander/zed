@@ -844,6 +844,8 @@ struct Shadow {
     Corners corner_radii;
     Bounds content_mask;
     Hsla color;
+    Bounds element_bounds;
+    Corners element_corner_radii;
 };
 
 struct ShadowVertexOutput {
@@ -907,6 +909,14 @@ float4 shadow_fragment(ShadowFragmentInput input): SV_TARGET {
                 gaussian(y, shadow.blur_radius) * step;
         y += step;
     }
+
+    // Clip shadow inside the original element bounds (prevents shadow
+    // bleeding through semi-transparent backgrounds)
+    float element_sdf = quad_sdf(input.position.xy,
+                                  shadow.element_bounds,
+                                  shadow.element_corner_radii);
+    float element_mask = saturate(element_sdf + 0.5);
+    alpha *= element_mask;
 
     return input.color * float4(1., 1., 1., alpha);
 }
