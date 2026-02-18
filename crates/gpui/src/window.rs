@@ -1457,13 +1457,25 @@ pub(crate) struct DispatchEventResult {
 }
 
 /// Indicates which region of the window is visible. Content falling outside of this mask will not be
-/// rendered. Currently, only rectangular content masks are supported, but we give the mask its own type
-/// to leave room to support more complex shapes in the future.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// rendered. Supports both rectangular and rounded-rectangle clipping via optional corner radii.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 #[repr(C)]
 pub struct ContentMask<P: Clone + Debug + Default + PartialEq> {
     /// The bounds
     pub bounds: Bounds<P>,
+    /// Optional corner radii for rounded clipping. When all values are zero (default),
+    /// only rectangular clipping is applied in shaders for maximum performance.
+    pub corner_radii: Corners<P>,
+}
+
+impl<P: Clone + Debug + Default + PartialEq> ContentMask<P> {
+    /// Create a content mask with the given bounds and no corner radii (rectangular clip).
+    pub fn new(bounds: Bounds<P>) -> Self {
+        ContentMask {
+            bounds,
+            corner_radii: Corners::default(),
+        }
+    }
 }
 
 impl ContentMask<Pixels> {
@@ -1471,13 +1483,35 @@ impl ContentMask<Pixels> {
     pub fn scale(&self, factor: f32) -> ContentMask<ScaledPixels> {
         ContentMask {
             bounds: self.bounds.scale(factor),
+            corner_radii: self.corner_radii.scale(factor),
         }
     }
 
     /// Intersect the content mask with the given content mask.
     pub fn intersect(&self, other: &Self) -> Self {
         let bounds = self.bounds.intersect(&other.bounds);
-        ContentMask { bounds }
+        // When intersecting, if either mask has corner radii, we use the inner mask's radii.
+        // The outer rectangular clip still applies via bounds intersection.
+        let corner_radii = if self.corner_radii != Corners::default() {
+            if other.corner_radii != Corners::default() {
+                // Both have radii: use the tighter (smaller bounds) mask's radii
+                if self.bounds.size.width.0 * self.bounds.size.height.0
+                    <= other.bounds.size.width.0 * other.bounds.size.height.0
+                {
+                    self.corner_radii.clone()
+                } else {
+                    other.corner_radii.clone()
+                }
+            } else {
+                self.corner_radii.clone()
+            }
+        } else {
+            other.corner_radii.clone()
+        };
+        ContentMask {
+            bounds,
+            corner_radii,
+        }
     }
 }
 
@@ -2853,6 +2887,7 @@ impl Window {
                     origin: Point::default(),
                     size: self.viewport_size,
                 },
+                corner_radii: Corners::default(),
             })
     }
 
@@ -3534,6 +3569,7 @@ impl Window {
         let content_mask = if let Some(clip) = clip_bounds {
             ContentMask {
                 bounds: clip.scale(scale_factor),
+                corner_radii: Corners::default(),
             }
         } else {
             self.content_mask().scale(scale_factor)

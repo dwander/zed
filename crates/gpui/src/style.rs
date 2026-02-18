@@ -604,7 +604,14 @@ impl Style {
                     (false, false) => Bounds::from_corners(min, max),
                 };
 
-                Some(ContentMask { bounds })
+                let corner_radii = self
+                    .corner_radii
+                    .to_pixels(rem_size);
+
+                Some(ContentMask {
+                    bounds,
+                    corner_radii,
+                })
             }
         }
     }
@@ -705,33 +712,18 @@ impl Style {
                 self.border_style,
             );
 
-            window.with_content_mask(Some(ContentMask { bounds: top_bounds }), |window| {
+            window.with_content_mask(Some(ContentMask::new(top_bounds)), |window| {
                 window.paint_quad(quad.clone());
             });
-            window.with_content_mask(
-                Some(ContentMask {
-                    bounds: right_bounds,
-                }),
-                |window| {
-                    window.paint_quad(quad.clone());
-                },
-            );
-            window.with_content_mask(
-                Some(ContentMask {
-                    bounds: bottom_bounds,
-                }),
-                |window| {
-                    window.paint_quad(quad.clone());
-                },
-            );
-            window.with_content_mask(
-                Some(ContentMask {
-                    bounds: left_bounds,
-                }),
-                |window| {
-                    window.paint_quad(quad);
-                },
-            );
+            window.with_content_mask(Some(ContentMask::new(right_bounds)), |window| {
+                window.paint_quad(quad.clone());
+            });
+            window.with_content_mask(Some(ContentMask::new(bottom_bounds)), |window| {
+                window.paint_quad(quad.clone());
+            });
+            window.with_content_mask(Some(ContentMask::new(left_bounds)), |window| {
+                window.paint_quad(quad);
+            });
         }
 
         #[cfg(debug_assertions)]

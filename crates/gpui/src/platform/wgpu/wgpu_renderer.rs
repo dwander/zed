@@ -61,7 +61,7 @@ struct PathRasterizationVertex {
     xy_position: Point<ScaledPixels>,
     st_position: Point<f32>,
     color: Background,
-    bounds: Bounds<ScaledPixels>,
+    content_mask: ContentMask<ScaledPixels>,
 }
 
 pub struct WgpuSurfaceConfig {
@@ -1249,7 +1249,7 @@ impl WgpuRenderer {
                 xy_position: v.xy_position,
                 st_position: v.st_position,
                 color: path.color,
-                bounds,
+                content_mask: path.content_mask,
             }));
         }
 
