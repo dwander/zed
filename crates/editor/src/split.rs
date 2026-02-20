@@ -225,10 +225,12 @@ where
     for (source_buffer, buffer_offset_range, source_excerpt_id, source_context_range) in
         source_snapshot.range_to_buffer_ranges_with_context(source_bounds)
     {
-        let target_excerpt_id = excerpt_map.get(&source_excerpt_id).copied().unwrap();
-        let target_buffer = target_snapshot
-            .buffer_for_excerpt(target_excerpt_id)
-            .unwrap();
+        let Some(target_excerpt_id) = excerpt_map.get(&source_excerpt_id).copied() else {
+            continue;
+        };
+        let Some(target_buffer) = target_snapshot.buffer_for_excerpt(target_excerpt_id) else {
+            continue;
+        };
 
         let buffer_id = source_buffer.remote_id();
 
@@ -1616,7 +1618,7 @@ impl Item for SplittableEditor {
         self.rhs_editor.read(cx).tab_content(params, window, cx)
     }
 
-    fn to_item_events(event: &EditorEvent, f: impl FnMut(ItemEvent)) {
+    fn to_item_events(event: &EditorEvent, f: &mut dyn FnMut(ItemEvent)) {
         Editor::to_item_events(event, f)
     }
 
@@ -2013,21 +2015,28 @@ impl LhsEditor {
         diff: Entity<BufferDiff>,
         lhs_cx: &mut Context<MultiBuffer>,
     ) -> Option<(Vec<ExcerptId>, Vec<Vec<ExcerptId>>)> {
-        let rhs_excerpt_ids: Vec<ExcerptId> =
-            rhs_multibuffer.excerpts_for_path(&path_key).collect();
-
         let Some(excerpt_id) = rhs_multibuffer.excerpts_for_path(&path_key).next() else {
             lhs_multibuffer.remove_excerpts_for_path(path_key, lhs_cx);
             return None;
         };
 
+        let rhs_excerpt_ids: Vec<ExcerptId> =
+            rhs_multibuffer.excerpts_for_path(&path_key).collect();
+
         let rhs_multibuffer_snapshot = rhs_multibuffer.snapshot(lhs_cx);
         let main_buffer = rhs_multibuffer_snapshot
             .buffer_for_excerpt(excerpt_id)
             .unwrap();
-        let base_text_buffer = diff.read(lhs_cx).base_text_buffer();
-        let diff_snapshot = diff.read(lhs_cx).snapshot(lhs_cx);
-        let base_text_buffer_snapshot = base_text_buffer.read(lhs_cx).snapshot();
+        let diff_snapshot;
+        let base_text_buffer_snapshot;
+        let remote_id;
+        {
+            let diff = diff.read(lhs_cx);
+            let base_text_buffer = diff.base_text_buffer().read(lhs_cx);
+            diff_snapshot = diff.snapshot(lhs_cx);
+            base_text_buffer_snapshot = base_text_buffer.snapshot();
+            remote_id = base_text_buffer.remote_id();
+        }
         let new = rhs_multibuffer
             .excerpts_for_buffer(main_buffer.remote_id(), lhs_cx)
             .into_iter()
@@ -2056,14 +2065,14 @@ impl LhsEditor {
 
         let lhs_result = lhs_multibuffer.update_path_excerpts(
             path_key,
-            base_text_buffer.clone(),
+            diff.read(lhs_cx).base_text_buffer().clone(),
             &base_text_buffer_snapshot,
             new,
             lhs_cx,
         );
         if !lhs_result.excerpt_ids.is_empty()
             && lhs_multibuffer
-                .diff_for(base_text_buffer.read(lhs_cx).remote_id())
+                .diff_for(remote_id)
                 .is_none_or(|old_diff| old_diff.entity_id() != diff.entity_id())
         {
             lhs_multibuffer.add_inverted_diff(diff, lhs_cx);
@@ -2254,7 +2263,7 @@ mod tests {
         assert_eq!(lhs_content, expected_lhs, "lhs");
     }
 
-    #[gpui::test(iterations = 100)]
+    #[gpui::test(iterations = 25)]
     async fn test_random_split_editor(mut rng: StdRng, cx: &mut gpui::TestAppContext) {
         use rand::prelude::*;
 

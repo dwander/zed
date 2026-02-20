@@ -5015,6 +5015,163 @@ async fn test_join_lines_with_git_diff_base(executor: BackgroundExecutor, cx: &m
 }
 
 #[gpui::test]
+async fn test_join_lines_strips_comment_prefix(cx: &mut TestAppContext) {
+    init_test(cx, |_| {});
+
+    {
+        let language = Arc::new(Language::new(
+            LanguageConfig {
+                line_comments: vec!["// ".into(), "/// ".into()],
+                documentation_comment: Some(BlockCommentConfig {
+                    start: "/*".into(),
+                    end: "*/".into(),
+                    prefix: "* ".into(),
+                    tab_size: 1,
+                }),
+                ..LanguageConfig::default()
+            },
+            None,
+        ));
+
+        let mut cx = EditorTestContext::new(cx).await;
+        cx.update_buffer(|buffer, cx| buffer.set_language(Some(language), cx));
+
+        // Strips the comment prefix (with trailing space) from the joined-in line.
+        cx.set_state(indoc! {"
+            // ˇfoo
+            // bar
+        "});
+        cx.update_editor(|e, window, cx| e.join_lines(&JoinLines, window, cx));
+        cx.assert_editor_state(indoc! {"
+            // fooˇ bar
+        "});
+
+        // Strips the longer doc-comment prefix when both `//` and `///` match.
+        cx.set_state(indoc! {"
+            /// ˇfoo
+            /// bar
+        "});
+        cx.update_editor(|e, window, cx| e.join_lines(&JoinLines, window, cx));
+        cx.assert_editor_state(indoc! {"
+            /// fooˇ bar
+        "});
+
+        // Does not strip when the second line is a regular line (no comment prefix).
+        cx.set_state(indoc! {"
+            // ˇfoo
+            bar
+        "});
+        cx.update_editor(|e, window, cx| e.join_lines(&JoinLines, window, cx));
+        cx.assert_editor_state(indoc! {"
+            // fooˇ bar
+        "});
+
+        // No-whitespace join also strips the comment prefix.
+        cx.set_state(indoc! {"
+            // ˇfoo
+            // bar
+        "});
+        cx.update_editor(|e, window, cx| e.join_lines_impl(false, window, cx));
+        cx.assert_editor_state(indoc! {"
+            // fooˇbar
+        "});
+
+        // Strips even when the joined-in line is just the bare prefix (no trailing space).
+        cx.set_state(indoc! {"
+            // ˇfoo
+            //
+        "});
+        cx.update_editor(|e, window, cx| e.join_lines(&JoinLines, window, cx));
+        cx.assert_editor_state(indoc! {"
+            // fooˇ
+        "});
+
+        // Mixed line comment prefix types: the longer matching prefix is stripped.
+        cx.set_state(indoc! {"
+            // ˇfoo
+            /// bar
+        "});
+        cx.update_editor(|e, window, cx| e.join_lines(&JoinLines, window, cx));
+        cx.assert_editor_state(indoc! {"
+            // fooˇ bar
+        "});
+
+        // Strips block comment body prefix (`* `) from the joined-in line.
+        cx.set_state(indoc! {"
+             * ˇfoo
+             * bar
+        "});
+        cx.update_editor(|e, window, cx| e.join_lines(&JoinLines, window, cx));
+        cx.assert_editor_state(indoc! {"
+             * fooˇ bar
+        "});
+
+        // Strips bare block comment body prefix (`*` without trailing space).
+        cx.set_state(indoc! {"
+             * ˇfoo
+             *
+        "});
+        cx.update_editor(|e, window, cx| e.join_lines(&JoinLines, window, cx));
+        cx.assert_editor_state(indoc! {"
+             * fooˇ
+        "});
+    }
+
+    {
+        let markdown_language = Arc::new(Language::new(
+            LanguageConfig {
+                unordered_list: vec!["- ".into(), "* ".into(), "+ ".into()],
+                ..LanguageConfig::default()
+            },
+            None,
+        ));
+
+        let mut cx = EditorTestContext::new(cx).await;
+        cx.update_buffer(|buffer, cx| buffer.set_language(Some(markdown_language), cx));
+
+        // Strips the `- ` list marker from the joined-in line.
+        cx.set_state(indoc! {"
+            - ˇfoo
+            - bar
+        "});
+        cx.update_editor(|e, window, cx| e.join_lines(&JoinLines, window, cx));
+        cx.assert_editor_state(indoc! {"
+            - fooˇ bar
+        "});
+
+        // Strips the `* ` list marker from the joined-in line.
+        cx.set_state(indoc! {"
+            * ˇfoo
+            * bar
+        "});
+        cx.update_editor(|e, window, cx| e.join_lines(&JoinLines, window, cx));
+        cx.assert_editor_state(indoc! {"
+            * fooˇ bar
+        "});
+
+        // Strips the `+ ` list marker from the joined-in line.
+        cx.set_state(indoc! {"
+            + ˇfoo
+            + bar
+        "});
+        cx.update_editor(|e, window, cx| e.join_lines(&JoinLines, window, cx));
+        cx.assert_editor_state(indoc! {"
+            + fooˇ bar
+        "});
+
+        // No-whitespace join also strips the list marker.
+        cx.set_state(indoc! {"
+            - ˇfoo
+            - bar
+        "});
+        cx.update_editor(|e, window, cx| e.join_lines_impl(false, window, cx));
+        cx.assert_editor_state(indoc! {"
+            - fooˇbar
+        "});
+    }
+}
+
+#[gpui::test]
 async fn test_custom_newlines_cause_no_false_positive_diffs(
     executor: BackgroundExecutor,
     cx: &mut TestAppContext,
@@ -22957,6 +23114,61 @@ async fn test_toggle_deletion_hunk_at_start_of_file(
 }
 
 #[gpui::test]
+async fn test_select_smaller_syntax_node_after_diff_hunk_collapse(
+    executor: BackgroundExecutor,
+    cx: &mut TestAppContext,
+) {
+    init_test(cx, |_| {});
+
+    let mut cx = EditorTestContext::new(cx).await;
+    cx.update_buffer(|buffer, cx| buffer.set_language(Some(rust_lang()), cx));
+
+    cx.set_state(
+        &r#"
+        fn main() {
+            let x = ˇ1;
+        }
+        "#
+        .unindent(),
+    );
+
+    let diff_base = r#"
+        fn removed_one() {
+            println!("this function was deleted");
+        }
+
+        fn removed_two() {
+            println!("this function was also deleted");
+        }
+
+        fn main() {
+            let x = 1;
+        }
+        "#
+    .unindent();
+    cx.set_head_text(&diff_base);
+    executor.run_until_parked();
+
+    cx.update_editor(|editor, window, cx| {
+        editor.expand_all_diff_hunks(&ExpandAllDiffHunks, window, cx);
+    });
+    executor.run_until_parked();
+
+    cx.update_editor(|editor, window, cx| {
+        editor.select_larger_syntax_node(&SelectLargerSyntaxNode, window, cx);
+    });
+
+    cx.update_editor(|editor, window, cx| {
+        editor.collapse_all_diff_hunks(&CollapseAllDiffHunks, window, cx);
+    });
+    executor.run_until_parked();
+
+    cx.update_editor(|editor, window, cx| {
+        editor.select_smaller_syntax_node(&SelectSmallerSyntaxNode, window, cx);
+    });
+}
+
+#[gpui::test]
 async fn test_expand_first_line_diff_hunk_keeps_deleted_lines_visible(
     executor: BackgroundExecutor,
     cx: &mut TestAppContext,
@@ -29415,6 +29627,7 @@ fn test_relative_line_numbers(cx: &mut TestAppContext) {
             .into_iter()
             .enumerate()
             .map(|(i, row)| (DisplayRow(row), i.abs_diff(base_row) as u32))
+            .filter(|(_, relative_line_number)| *relative_line_number != 0)
             .collect_vec();
         let actual_relative_numbers = snapshot
             .calculate_relative_line_numbers(
