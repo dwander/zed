@@ -9,8 +9,8 @@ use anyhow::{Context as _, Result, anyhow};
 use edit_prediction::udiff;
 use gpui::AsyncApp;
 use similar::DiffableStr;
+use std::ops::Range;
 use std::sync::Arc;
-use std::{fmt::Write as _, ops::Range};
 use zeta_prompt::{
     ZetaFormat, excerpt_range_for_format, format_zeta_prompt, resolve_cursor_region,
 };
@@ -36,12 +36,8 @@ pub async fn run_format_prompt(
             step_progress.set_substatus("formatting teacher prompt");
 
             let zeta_format = ZetaFormat::default();
-            let excerpt_ranges = prompt_inputs
-                .excerpt_ranges
-                .as_ref()
-                .context("prompt_inputs must have excerpt_ranges")?;
             let (editable_range, context_range) =
-                excerpt_range_for_format(zeta_format, excerpt_ranges);
+                excerpt_range_for_format(zeta_format, &prompt_inputs.excerpt_ranges);
 
             let prompt = TeacherPrompt::format_prompt(example, editable_range, context_range);
             example.prompt = Some(ExamplePrompt {
@@ -258,7 +254,6 @@ impl TeacherPrompt {
 
     pub fn format_context(example: &Example) -> String {
         let related_files = example.prompt_inputs.as_ref().map(|pi| &pi.related_files);
-
         let Some(related_files) = related_files else {
             return "(No context)".to_string();
         };
@@ -267,27 +262,10 @@ impl TeacherPrompt {
             return "(No context)".to_string();
         }
 
-        let mut prompt = String::new();
-        for file in related_files {
-            let path_str = file.path.to_string_lossy();
-            writeln!(&mut prompt, "`````{path_str}").ok();
-
-            let mut prev_row = 0;
-            for excerpt in &file.excerpts {
-                if excerpt.row_range.start > prev_row {
-                    prompt.push_str("…\n");
-                }
-                prompt.push_str(&excerpt.text);
-                prompt.push('\n');
-                prev_row = excerpt.row_range.end;
-            }
-            if prev_row < file.max_row {
-                prompt.push_str("…\n");
-            }
-            prompt.push_str("\n`````\n");
-        }
-
-        prompt
+        let prefix = "`````";
+        let suffix = "`````\n\n";
+        let max_tokens = 1024;
+        zeta_prompt::format_related_files_within_budget(related_files, &prefix, &suffix, max_tokens)
     }
 
     fn format_cursor_excerpt(

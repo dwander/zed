@@ -18,17 +18,10 @@ fn estimate_tokens(bytes: usize) -> usize {
     bytes / 3
 }
 
-/// The client's preferred edit prediction model. The server may override this.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum EditPredictionModelKind {
-    Zeta1,
-    Zeta2,
-}
-
 /// Pre-computed byte offset ranges within `cursor_excerpt` for different
 /// editable and context token budgets. Allows the server to select the
 /// appropriate ranges for whichever model it uses.
-#[derive(Clone, Debug, PartialEq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Hash, Serialize, Deserialize)]
 pub struct ExcerptRanges {
     /// Editable region computed with a 150-token budget.
     pub editable_150: Range<usize>,
@@ -36,33 +29,34 @@ pub struct ExcerptRanges {
     pub editable_180: Range<usize>,
     /// Editable region computed with a 350-token budget.
     pub editable_350: Range<usize>,
+    /// Editable region computed with a 350-token budget.
+    pub editable_512: Option<Range<usize>>,
     /// Context boundary when using editable_150 with 350 tokens of additional context.
     pub editable_150_context_350: Range<usize>,
     /// Context boundary when using editable_180 with 350 tokens of additional context.
     pub editable_180_context_350: Range<usize>,
     /// Context boundary when using editable_350 with 150 tokens of additional context.
     pub editable_350_context_150: Range<usize>,
+    pub editable_350_context_512: Option<Range<usize>>,
+    pub editable_350_context_1024: Option<Range<usize>>,
+    pub context_4096: Option<Range<usize>>,
+    pub context_8192: Option<Range<usize>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Hash, Serialize, Deserialize)]
 pub struct ZetaPromptInput {
     pub cursor_path: Arc<Path>,
     pub cursor_excerpt: Arc<str>,
-    pub editable_range_in_excerpt: Range<usize>,
     pub cursor_offset_in_excerpt: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub excerpt_start_row: Option<u32>,
     pub events: Vec<Arc<Event>>,
     pub related_files: Vec<RelatedFile>,
-    /// When set, the excerpt was computed with a larger budget (~512 tokens)
-    /// and these ranges let the server select model-appropriate subsets.
-    /// When absent, the excerpt IS the context region and
-    /// `editable_range_in_excerpt` is the only editable range.
+    /// These ranges let the server select model-appropriate subsets.
+    pub excerpt_ranges: ExcerptRanges,
+    /// The name of the edit prediction model experiment to use.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub excerpt_ranges: Option<ExcerptRanges>,
-    /// Client's preferred model. The server may override.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub preferred_model: Option<EditPredictionModelKind>,
+    pub experiment: Option<String>,
     #[serde(default)]
     pub in_open_source_repo: bool,
     #[serde(default)]
@@ -268,15 +262,7 @@ pub fn resolve_cursor_region(
     input: &ZetaPromptInput,
     format: ZetaFormat,
 ) -> (&str, Range<usize>, usize) {
-    let Some(ranges) = &input.excerpt_ranges else {
-        return (
-            &input.cursor_excerpt,
-            input.editable_range_in_excerpt.clone(),
-            input.cursor_offset_in_excerpt,
-        );
-    };
-
-    let (editable_range, context_range) = excerpt_range_for_format(format, ranges);
+    let (editable_range, context_range) = excerpt_range_for_format(format, &input.excerpt_ranges);
     let context_start = context_range.start;
     let context_text = &input.cursor_excerpt[context_range];
     let adjusted_editable =
@@ -358,6 +344,7 @@ fn format_zeta_prompt_with_budget(
     let related_files_section = format_related_files_within_budget(
         &input.related_files,
         "<|file_sep|>",
+        "",
         budget_after_edit_history,
     );
 
@@ -430,158 +417,89 @@ fn excerpt_rendered_tokens(excerpt: &RelatedExcerpt, file_max_row: u32) -> usize
     estimate_tokens(len)
 }
 
-fn format_related_files_within_budget(
+pub fn format_related_files_within_budget(
     related_files: &[RelatedFile],
-    file_marker: &str,
+    file_prefix: &str,
+    file_suffix: &str,
     max_tokens: usize,
 ) -> String {
-    // Collect the distinct order values across all excerpts, sorted ascending.
-    let mut order_levels: Vec<usize> = related_files
+    struct ExcerptCandidate {
+        file_ix: usize,
+        excerpt_ix: usize,
+        order: usize,
+    }
+
+    let mut excerpt_candidates: Vec<ExcerptCandidate> = related_files
         .iter()
-        .flat_map(|f| f.excerpts.iter().map(|e| e.order))
+        .enumerate()
+        .flat_map(|(file_ix, file)| {
+            file.excerpts
+                .iter()
+                .enumerate()
+                .map(move |(excerpt_ix, e)| ExcerptCandidate {
+                    file_ix,
+                    excerpt_ix,
+                    order: e.order,
+                })
+        })
         .collect();
-    order_levels.sort_unstable();
-    order_levels.dedup();
 
     // Pre-compute file header strings and their token costs.
     let file_headers: Vec<String> = related_files
         .iter()
         .map(|file| {
             let path_str = file.path.to_string_lossy();
-            format!("{}{}\n", file_marker, path_str)
+            format!("{}{}\n", file_prefix, path_str)
         })
         .collect();
 
-    // Track which excerpts are included per file.
-    let mut included: Vec<Vec<bool>> = related_files
-        .iter()
-        .map(|file| vec![false; file.excerpts.len()])
-        .collect();
-    let mut file_included: Vec<bool> = vec![false; related_files.len()];
+    // Sort the excerpts by their order and determine how many fit within the budget.
     let mut total_tokens = 0;
-
-    // Process order levels from best (lowest) to worst. At each level, try to
-    // include all not-yet-included excerpts with that order across all files.
-    // If the full level doesn't fit, include a partial prefix (top-to-bottom
-    // within each file) and stop — don't proceed to worse order levels.
-    'outer: for &order in &order_levels {
-        // Gather the work for this order level: for each file that has excerpts
-        // at this order, collect the not-yet-included excerpt indices (in their
-        // original positional order) and the token cost to add them (including
-        // the file header if the file isn't already included).
-        struct FileWork {
-            file_idx: usize,
-            excerpt_indices: Vec<usize>,
-            header_cost: usize,
-            excerpt_costs: Vec<usize>,
-        }
-
-        let mut work_items: Vec<FileWork> = Vec::new();
-        for (file_idx, file) in related_files.iter().enumerate() {
-            let mut excerpt_indices = Vec::new();
-            let mut excerpt_costs = Vec::new();
-            for (eidx, excerpt) in file.excerpts.iter().enumerate() {
-                if excerpt.order == order && !included[file_idx][eidx] {
-                    excerpt_indices.push(eidx);
-                    excerpt_costs.push(excerpt_rendered_tokens(excerpt, file.max_row));
-                }
-            }
-            if excerpt_indices.is_empty() {
-                continue;
-            }
-            let header_cost = if file_included[file_idx] {
-                0
-            } else {
-                estimate_tokens(file_headers[file_idx].len())
-            };
-            work_items.push(FileWork {
-                file_idx,
-                excerpt_indices,
-                header_cost,
-                excerpt_costs,
-            });
-        }
-
-        // Compute the total cost for this entire order level.
-        let level_cost: usize = work_items
-            .iter()
-            .map(|w| w.header_cost + w.excerpt_costs.iter().sum::<usize>())
-            .sum();
-
-        if total_tokens + level_cost <= max_tokens {
-            // The whole level fits — include everything.
-            for work in &work_items {
-                total_tokens += work.header_cost;
-                file_included[work.file_idx] = true;
-                for (i, &eidx) in work.excerpt_indices.iter().enumerate() {
-                    included[work.file_idx][eidx] = true;
-                    total_tokens += work.excerpt_costs[i];
-                }
-            }
+    let mut included_excerpt_count = 0_usize;
+    let mut included_file_indices = vec![false; related_files.len()];
+    excerpt_candidates.sort_by_key(|e| (e.order, e.file_ix, e.excerpt_ix));
+    for candidate in &excerpt_candidates {
+        let file = &related_files[candidate.file_ix];
+        let excerpt = &file.excerpts[candidate.excerpt_ix];
+        let file_already_included = included_file_indices[candidate.file_ix];
+        let header_cost = if file_already_included {
+            0
         } else {
-            // The whole level doesn't fit. Include as many excerpts as possible
-            // from each file (in positional order), then stop entirely.
-            for work in &work_items {
-                let available = max_tokens.saturating_sub(total_tokens);
-                let mut file_cost = work.header_cost;
-
-                let mut count = 0;
-                for i in 0..work.excerpt_indices.len() {
-                    if file_cost + work.excerpt_costs[i] > available {
-                        break;
-                    }
-                    file_cost += work.excerpt_costs[i];
-                    count += 1;
-                }
-
-                if count > 0 {
-                    total_tokens += work.header_cost;
-                    file_included[work.file_idx] = true;
-                    for (i, &eidx) in work.excerpt_indices.iter().take(count).enumerate() {
-                        included[work.file_idx][eidx] = true;
-                        total_tokens += work.excerpt_costs[i];
-                    }
-                }
-            }
-            break 'outer;
+            estimate_tokens(file_headers[candidate.file_ix].len() + file_suffix.len())
+        };
+        let excerpt_cost = excerpt_rendered_tokens(excerpt, file.max_row);
+        if total_tokens + header_cost + excerpt_cost > max_tokens {
+            break;
         }
+        total_tokens += header_cost + excerpt_cost;
+        if !file_already_included {
+            included_file_indices[candidate.file_ix] = true;
+        }
+        included_excerpt_count += 1;
     }
 
-    // Determine file rendering order: by the best (lowest) order of any
-    // included excerpt, breaking ties by original file index.
-    let mut file_order: Vec<(usize, usize)> = Vec::new();
-    for (file_idx, file) in related_files.iter().enumerate() {
-        if !file_included[file_idx] {
-            continue;
-        }
-        let best_order = file
-            .excerpts
-            .iter()
-            .enumerate()
-            .filter(|(eidx, _)| included[file_idx][*eidx])
-            .map(|(_, e)| e.order)
-            .min()
-            .unwrap_or(usize::MAX);
-        file_order.push((file_idx, best_order));
-    }
-    file_order.sort_by_key(|&(file_idx, best_order)| (best_order, file_idx));
+    excerpt_candidates.truncate(included_excerpt_count);
+    excerpt_candidates.sort_unstable_by_key(|c| (c.file_ix, c.excerpt_ix));
 
-    // Render included files and excerpts in positional order within each file.
+    // Render all of the files that fit within the token budget, in the original order.
     let mut result = String::new();
-    for &(file_idx, _) in &file_order {
-        let file = &related_files[file_idx];
-        result.push_str(&file_headers[file_idx]);
-        for (eidx, excerpt) in file.excerpts.iter().enumerate() {
-            if !included[file_idx][eidx] {
-                continue;
+    let mut last_file_ix = None;
+    for candidate in &excerpt_candidates {
+        if last_file_ix != Some(candidate.file_ix) {
+            if last_file_ix.is_some() {
+                result.push_str(file_suffix);
             }
-            result.push_str(&excerpt.text);
-            if !result.ends_with('\n') {
-                result.push('\n');
-            }
-            if excerpt.row_range.end < file.max_row {
-                result.push_str("...\n");
-            }
+            result.push_str(&file_headers[candidate.file_ix]);
+            last_file_ix = Some(candidate.file_ix);
+        }
+        let file = &related_files[candidate.file_ix];
+        let excerpt = &file.excerpts[candidate.excerpt_ix];
+        result.push_str(&excerpt.text);
+        if !result.ends_with('\n') {
+            result.push('\n');
+        }
+        if excerpt.row_range.end < file.max_row {
+            result.push_str("...\n");
         }
     }
 
@@ -958,6 +876,7 @@ pub mod seed_coder {
         let related_files_section = super::format_related_files_within_budget(
             related_files,
             FILE_MARKER,
+            "",
             budget_after_edit_history,
         );
 
@@ -1220,16 +1139,24 @@ mod tests {
         events: Vec<Event>,
         related_files: Vec<RelatedFile>,
     ) -> ZetaPromptInput {
+        let context_range = 0..cursor_excerpt.len();
         ZetaPromptInput {
             cursor_path: Path::new("test.rs").into(),
             cursor_excerpt: cursor_excerpt.into(),
-            editable_range_in_excerpt: editable_range,
             cursor_offset_in_excerpt: cursor_offset,
             excerpt_start_row: None,
             events: events.into_iter().map(Arc::new).collect(),
             related_files,
-            excerpt_ranges: None,
-            preferred_model: None,
+            excerpt_ranges: ExcerptRanges {
+                editable_150: editable_range.clone(),
+                editable_180: editable_range.clone(),
+                editable_350: editable_range,
+                editable_150_context_350: context_range.clone(),
+                editable_180_context_350: context_range.clone(),
+                editable_350_context_150: context_range,
+                ..Default::default()
+            },
+            experiment: None,
             in_open_source_repo: false,
             can_collect_data: false,
         }
@@ -1444,14 +1371,14 @@ mod tests {
             ],
         );
 
-        // With large budget, both files included; file_b (order 1) renders before file_a (order 5).
+        // With large budget, both files included; rendered in stable lexicographic order.
         assert_eq!(
             format_with_budget(&input, 10000),
             indoc! {r#"
-                <|file_sep|>file_b.rs
-                high priority content
                 <|file_sep|>file_a.rs
                 low priority content
+                <|file_sep|>file_b.rs
+                high priority content
                 <|file_sep|>test.rs
                 <|fim_prefix|>
                 <|fim_middle|>current
@@ -1757,15 +1684,15 @@ mod tests {
             ],
         );
 
-        // With large budget, both included; high_prio first due to lower order.
+        // With large budget, both included; rendered in stable lexicographic order.
         assert_eq!(
             format_seed_coder(&input),
             indoc! {r#"
                 <[fim-suffix]>
-                <[fim-prefix]><filename>high_prio.rs
-                high prio
-                <filename>low_prio.rs
+                <[fim-prefix]><filename>low_prio.rs
                 low prio
+                <filename>high_prio.rs
+                high prio
 
                 <filename>test.rs
                 <<<<<<< CURRENT
@@ -1813,13 +1740,20 @@ mod tests {
         let input = ZetaPromptInput {
             cursor_path: Path::new("src/main.rs").into(),
             cursor_excerpt: excerpt.into(),
-            editable_range_in_excerpt: 15..41,
             cursor_offset_in_excerpt: 30,
             excerpt_start_row: Some(0),
             events: vec![Arc::new(make_event("other.rs", "-old\n+new\n"))],
             related_files: vec![],
-            excerpt_ranges: None,
-            preferred_model: None,
+            excerpt_ranges: ExcerptRanges {
+                editable_150: 15..41,
+                editable_180: 15..41,
+                editable_350: 15..41,
+                editable_150_context_350: 0..excerpt.len(),
+                editable_180_context_350: 0..excerpt.len(),
+                editable_350_context_150: 0..excerpt.len(),
+                ..Default::default()
+            },
+            experiment: None,
             in_open_source_repo: false,
             can_collect_data: false,
         };
@@ -1868,13 +1802,20 @@ mod tests {
         let input = ZetaPromptInput {
             cursor_path: Path::new("src/main.rs").into(),
             cursor_excerpt: excerpt.into(),
-            editable_range_in_excerpt: 0..28,
             cursor_offset_in_excerpt: 15,
             excerpt_start_row: Some(10),
             events: vec![],
             related_files: vec![],
-            excerpt_ranges: None,
-            preferred_model: None,
+            excerpt_ranges: ExcerptRanges {
+                editable_150: 0..28,
+                editable_180: 0..28,
+                editable_350: 0..28,
+                editable_150_context_350: 0..28,
+                editable_180_context_350: 0..28,
+                editable_350_context_150: 0..28,
+                ..Default::default()
+            },
+            experiment: None,
             in_open_source_repo: false,
             can_collect_data: false,
         };
@@ -1918,13 +1859,20 @@ mod tests {
         let input = ZetaPromptInput {
             cursor_path: Path::new("test.rs").into(),
             cursor_excerpt: excerpt.into(),
-            editable_range_in_excerpt: editable_range.clone(),
             cursor_offset_in_excerpt: 25,
             excerpt_start_row: Some(0),
             events: vec![],
             related_files: vec![],
-            excerpt_ranges: None,
-            preferred_model: None,
+            excerpt_ranges: ExcerptRanges {
+                editable_150: editable_range.clone(),
+                editable_180: editable_range.clone(),
+                editable_350: editable_range.clone(),
+                editable_150_context_350: context_range.clone(),
+                editable_180_context_350: context_range.clone(),
+                editable_350_context_150: context_range.clone(),
+                ..Default::default()
+            },
+            experiment: None,
             in_open_source_repo: false,
             can_collect_data: false,
         };
