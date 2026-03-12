@@ -1352,3 +1352,124 @@ float4 polychrome_sprite_fragment(PolychromeSpriteFragmentInput input): SV_Targe
     color.a *= sprite.opacity * saturate(0.5 - distance) * mask_alpha;
     return color;
 }
+
+/*
+**
+**              Backdrop Blur
+**
+**  Two-pass separable Gaussian blur applied to the framebuffer content.
+**
+**  H pass (backdrop_blur_h): reads from the captured framebuffer snapshot
+**          (t0 = blur_capture_srv), applies horizontal Gaussian blur,
+**          writes to blur_h_rtv.
+**
+**  V pass (backdrop_blur_v): reads from blur_h (t0 = blur_h_srv), applies
+**          vertical Gaussian blur + rounded-corner compositing,
+**          writes back to the main render target.
+*/
+
+struct BackdropBlur {
+    uint order;
+    float blur_radius;
+    Bounds bounds;
+    Corners corner_radii;
+    ContentMask content_mask;
+};
+
+StructuredBuffer<BackdropBlur> backdrop_blurs: register(t1);
+
+struct BackdropBlurVertexOutput {
+    nointerpolation uint blur_id: TEXCOORD0;
+    float4 position: SV_Position;
+    float4 clip_distance: SV_ClipDistance;
+};
+
+struct BackdropBlurFragmentInput {
+    nointerpolation uint blur_id: TEXCOORD0;
+    float4 position: SV_Position;
+};
+
+// H pass vertex: expands bounds by 3*blur_radius in all directions so that
+// the V pass has correctly blurred data at the edges of `bounds`.
+BackdropBlurVertexOutput backdrop_blur_h_vertex(uint vertex_id: SV_VertexID, uint blur_id: SV_InstanceID) {
+    float2 unit_vertex = float2(float(vertex_id & 1u), 0.5 * float(vertex_id & 2u));
+    BackdropBlur blur = backdrop_blurs[blur_id];
+
+    float margin = 3.0 * blur.blur_radius;
+    Bounds bounds = blur.bounds;
+    bounds.origin -= margin;
+    bounds.size += 2.0 * margin;
+
+    BackdropBlurVertexOutput output;
+    output.position = to_device_position(unit_vertex, bounds);
+    output.clip_distance = distance_from_clip_rect(unit_vertex, bounds, blur.content_mask);
+    output.blur_id = blur_id;
+    return output;
+}
+
+// H pass fragment: horizontal Gaussian blur from blur_capture (t0).
+float4 backdrop_blur_h_fragment(BackdropBlurFragmentInput input): SV_TARGET {
+    BackdropBlur blur = backdrop_blurs[input.blur_id];
+
+    float2 uv = input.position.xy / global_viewport_size;
+    float4 color = float4(0.0, 0.0, 0.0, 0.0);
+    float weight_sum = 0.0;
+    int radius = min(int(ceil(3.0 * blur.blur_radius)), 64);
+
+    for (int i = -radius; i <= radius; i++) {
+        float weight = gaussian(float(i), blur.blur_radius);
+        float2 sample_uv = uv + float2(float(i) / global_viewport_size.x, 0.0);
+        sample_uv = clamp(sample_uv, 0.0, 1.0);
+        color += t_sprite.SampleLevel(s_sprite, sample_uv, 0) * weight;
+        weight_sum += weight;
+    }
+
+    return color / weight_sum;
+}
+
+// V pass vertex: renders exactly within `bounds` (no expansion).
+BackdropBlurVertexOutput backdrop_blur_v_vertex(uint vertex_id: SV_VertexID, uint blur_id: SV_InstanceID) {
+    float2 unit_vertex = float2(float(vertex_id & 1u), 0.5 * float(vertex_id & 2u));
+    BackdropBlur blur = backdrop_blurs[blur_id];
+
+    BackdropBlurVertexOutput output;
+    output.position = to_device_position(unit_vertex, blur.bounds);
+    output.clip_distance = distance_from_clip_rect(unit_vertex, blur.bounds, blur.content_mask);
+    output.blur_id = blur_id;
+    return output;
+}
+
+// V pass fragment: vertical Gaussian blur from blur_h (t0), composited with
+// rounded-corner clipping. Outputs premultiplied alpha for correct compositing.
+float4 backdrop_blur_v_fragment(BackdropBlurFragmentInput input): SV_TARGET {
+    BackdropBlur blur = backdrop_blurs[input.blur_id];
+
+    float mask_alpha = clip_round_mask(input.position.xy, blur.content_mask);
+    if (mask_alpha < 0.001) {
+        return float4(0.0, 0.0, 0.0, 0.0);
+    }
+
+    float corner_sdf = quad_sdf(input.position.xy, blur.bounds, blur.corner_radii);
+    float corner_alpha = saturate(0.5 - corner_sdf) * mask_alpha;
+    if (corner_alpha < 0.001) {
+        return float4(0.0, 0.0, 0.0, 0.0);
+    }
+
+    float2 uv = input.position.xy / global_viewport_size;
+    float4 color = float4(0.0, 0.0, 0.0, 0.0);
+    float weight_sum = 0.0;
+    int radius = min(int(ceil(3.0 * blur.blur_radius)), 64);
+
+    for (int i = -radius; i <= radius; i++) {
+        float weight = gaussian(float(i), blur.blur_radius);
+        float2 sample_uv = uv + float2(0.0, float(i) / global_viewport_size.y);
+        sample_uv = clamp(sample_uv, 0.0, 1.0);
+        color += t_sprite.SampleLevel(s_sprite, sample_uv, 0) * weight;
+        weight_sum += weight;
+    }
+
+    float3 blurred_rgb = (color / weight_sum).rgb;
+    // Output premultiplied alpha so the standard ONE/INV_SRC_ALPHA blend
+    // correctly replaces the background inside the blur bounds.
+    return float4(blurred_rgb * corner_alpha, corner_alpha);
+}

@@ -76,6 +76,15 @@ struct DirectXResources {
     path_intermediate_msaa_texture: ID3D11Texture2D,
     path_intermediate_msaa_view: Option<ID3D11RenderTargetView>,
 
+    // Backdrop blur intermediate textures
+    // blur_capture: snapshot of the RT taken before each backdrop blur draw call
+    blur_capture_texture: ID3D11Texture2D,
+    blur_capture_srv: Option<ID3D11ShaderResourceView>,
+    // blur_h: output of the horizontal Gaussian blur pass
+    blur_h_texture: ID3D11Texture2D,
+    blur_h_srv: Option<ID3D11ShaderResourceView>,
+    blur_h_rtv: Option<ID3D11RenderTargetView>,
+
     // Cached viewport
     viewport: D3D11_VIEWPORT,
 }
@@ -89,6 +98,8 @@ struct DirectXRenderPipelines {
     mono_sprites: PipelineState<MonochromeSprite>,
     subpixel_sprites: PipelineState<SubpixelSprite>,
     poly_sprites: PipelineState<PolychromeSprite>,
+    backdrop_blur_h_pipeline: PipelineState<BackdropBlur>,
+    backdrop_blur_v_pipeline: PipelineState<BackdropBlur>,
 }
 
 struct DirectXGlobalElements {
@@ -355,10 +366,13 @@ impl DirectXRenderer {
                     self.draw_polychrome_sprites(texture_id, range.start, range.len())
                 }
                 PrimitiveBatch::Surfaces(range) => self.draw_surfaces(&scene.surfaces[range]),
+                PrimitiveBatch::BackdropBlurs(range) => {
+                    self.draw_backdrop_blurs(range.start, range.len())
+                }
             }
             .context(format!(
                 "scene too large:\
-                {} paths, {} shadows, {} quads, {} underlines, {} mono, {} subpixel, {} poly, {} surfaces",
+                {} paths, {} shadows, {} quads, {} underlines, {} mono, {} subpixel, {} poly, {} surfaces, {} backdrop_blurs",
                 scene.paths.len(),
                 scene.shadows.len(),
                 scene.quads.len(),
@@ -367,6 +381,7 @@ impl DirectXRenderer {
                 scene.subpixel_sprites.len(),
                 scene.polychrome_sprites.len(),
                 scene.surfaces.len(),
+                scene.backdrop_blurs.len(),
             ))?;
         }
         self.present()
@@ -464,6 +479,19 @@ impl DirectXRenderer {
                 &devices.device,
                 &devices.device_context,
                 &scene.polychrome_sprites,
+            )?;
+        }
+
+        if !scene.backdrop_blurs.is_empty() {
+            self.pipelines.backdrop_blur_h_pipeline.update_buffer(
+                &devices.device,
+                &devices.device_context,
+                &scene.backdrop_blurs,
+            )?;
+            self.pipelines.backdrop_blur_v_pipeline.update_buffer(
+                &devices.device,
+                &devices.device_context,
+                &scene.backdrop_blurs,
             )?;
         }
 
@@ -721,6 +749,81 @@ impl DirectXRenderer {
         Ok(())
     }
 
+    fn draw_backdrop_blurs(&mut self, start: usize, len: usize) -> Result<()> {
+        if len == 0 {
+            return Ok(());
+        }
+
+        let devices = self.devices.as_ref().context("devices missing")?;
+        let resources = self.resources.as_ref().context("resources missing")?;
+
+        unsafe {
+            // Step 1: Capture the current render target into blur_capture_texture.
+            // This snapshot is used as the source for the horizontal blur pass.
+            devices.device_context.CopyResource(
+                &resources.blur_capture_texture,
+                resources
+                    .render_target
+                    .as_ref()
+                    .context("render_target missing")?,
+            );
+
+            // Step 2: Horizontal blur pass — blur_capture → blur_h.
+            // Clear blur_h and redirect rendering to it.
+            devices.device_context.ClearRenderTargetView(
+                resources.blur_h_rtv.as_ref().unwrap(),
+                &[0.0f32; 4],
+            );
+            devices
+                .device_context
+                .OMSetRenderTargets(Some(slice::from_ref(&resources.blur_h_rtv)), None);
+        }
+
+        self.pipelines.backdrop_blur_h_pipeline.draw_range_with_texture(
+            &devices.device,
+            &devices.device_context,
+            slice::from_ref(&resources.blur_capture_srv),
+            slice::from_ref(
+                &self
+                    .resources
+                    .as_ref()
+                    .context("resources missing")?
+                    .viewport,
+            ),
+            slice::from_ref(&self.globals.global_params_buffer),
+            slice::from_ref(&self.globals.sampler),
+            start as u32,
+            len as u32,
+        )?;
+
+        // Step 3: Vertical blur + composite pass — blur_h → main RT.
+        let devices = self.devices.as_ref().context("devices missing")?;
+        let resources = self.resources.as_ref().context("resources missing")?;
+
+        unsafe {
+            devices
+                .device_context
+                .OMSetRenderTargets(Some(slice::from_ref(&resources.render_target_view)), None);
+        }
+
+        self.pipelines.backdrop_blur_v_pipeline.draw_range_with_texture(
+            &devices.device,
+            &devices.device_context,
+            slice::from_ref(&resources.blur_h_srv),
+            slice::from_ref(
+                &self
+                    .resources
+                    .as_ref()
+                    .context("resources missing")?
+                    .viewport,
+            ),
+            slice::from_ref(&self.globals.global_params_buffer),
+            slice::from_ref(&self.globals.sampler),
+            start as u32,
+            len as u32,
+        )
+    }
+
     /// 3D LUT 텍스처 설정 (색 변환용)
     ///
     /// # Arguments
@@ -882,6 +985,11 @@ impl DirectXResources {
             path_intermediate_srv,
             path_intermediate_msaa_texture,
             path_intermediate_msaa_view,
+            blur_capture_texture,
+            blur_capture_srv,
+            blur_h_texture,
+            blur_h_srv,
+            blur_h_rtv,
             viewport,
         ) = create_resources(devices, &swap_chain, width, height)?;
         set_rasterizer_state(&devices.device, &devices.device_context)?;
@@ -894,6 +1002,11 @@ impl DirectXResources {
             path_intermediate_msaa_texture,
             path_intermediate_msaa_view,
             path_intermediate_srv,
+            blur_capture_texture,
+            blur_capture_srv,
+            blur_h_texture,
+            blur_h_srv,
+            blur_h_rtv,
             viewport,
         })
     }
@@ -912,6 +1025,11 @@ impl DirectXResources {
             path_intermediate_srv,
             path_intermediate_msaa_texture,
             path_intermediate_msaa_view,
+            blur_capture_texture,
+            blur_capture_srv,
+            blur_h_texture,
+            blur_h_srv,
+            blur_h_rtv,
             viewport,
         ) = create_resources(devices, &self.swap_chain, width, height)?;
         self.render_target = Some(render_target);
@@ -920,6 +1038,11 @@ impl DirectXResources {
         self.path_intermediate_msaa_texture = path_intermediate_msaa_texture;
         self.path_intermediate_msaa_view = path_intermediate_msaa_view;
         self.path_intermediate_srv = path_intermediate_srv;
+        self.blur_capture_texture = blur_capture_texture;
+        self.blur_capture_srv = blur_capture_srv;
+        self.blur_h_texture = blur_h_texture;
+        self.blur_h_srv = blur_h_srv;
+        self.blur_h_rtv = blur_h_rtv;
         self.viewport = viewport;
         Ok(())
     }
@@ -983,6 +1106,20 @@ impl DirectXRenderPipelines {
             16,
             create_blend_state(device)?,
         )?;
+        let backdrop_blur_h_pipeline = PipelineState::new(
+            device,
+            "backdrop_blur_h_pipeline",
+            ShaderModule::BackdropBlurH,
+            4,
+            create_blend_state_for_path_sprite(device)?,
+        )?;
+        let backdrop_blur_v_pipeline = PipelineState::new(
+            device,
+            "backdrop_blur_v_pipeline",
+            ShaderModule::BackdropBlurV,
+            4,
+            create_blend_state_for_path_sprite(device)?,
+        )?;
 
         Ok(Self {
             shadow_pipeline,
@@ -993,6 +1130,8 @@ impl DirectXRenderPipelines {
             mono_sprites,
             subpixel_sprites,
             poly_sprites,
+            backdrop_blur_h_pipeline,
+            backdrop_blur_v_pipeline,
         })
     }
 }
@@ -1374,6 +1513,11 @@ fn create_resources(
     Option<ID3D11ShaderResourceView>,
     ID3D11Texture2D,
     Option<ID3D11RenderTargetView>,
+    ID3D11Texture2D,
+    Option<ID3D11ShaderResourceView>,
+    ID3D11Texture2D,
+    Option<ID3D11ShaderResourceView>,
+    Option<ID3D11RenderTargetView>,
     D3D11_VIEWPORT,
 )> {
     let (render_target, render_target_view) =
@@ -1382,6 +1526,10 @@ fn create_resources(
         create_path_intermediate_texture(&devices.device, width, height)?;
     let (path_intermediate_msaa_texture, path_intermediate_msaa_view) =
         create_path_intermediate_msaa_texture_and_view(&devices.device, width, height)?;
+    let (blur_capture_texture, blur_capture_srv) =
+        create_path_intermediate_texture(&devices.device, width, height)?;
+    let (blur_h_texture, blur_h_srv, blur_h_rtv) =
+        create_blur_intermediate_texture(&devices.device, width, height)?;
     let viewport = set_viewport(&devices.device_context, width as f32, height as f32);
     Ok((
         render_target,
@@ -1390,8 +1538,53 @@ fn create_resources(
         path_intermediate_srv,
         path_intermediate_msaa_texture,
         path_intermediate_msaa_view,
+        blur_capture_texture,
+        blur_capture_srv,
+        blur_h_texture,
+        blur_h_srv,
+        blur_h_rtv,
         viewport,
     ))
+}
+
+#[inline]
+fn create_blur_intermediate_texture(
+    device: &ID3D11Device,
+    width: u32,
+    height: u32,
+) -> Result<(
+    ID3D11Texture2D,
+    Option<ID3D11ShaderResourceView>,
+    Option<ID3D11RenderTargetView>,
+)> {
+    let texture = unsafe {
+        let mut output = None;
+        let desc = D3D11_TEXTURE2D_DESC {
+            Width: width,
+            Height: height,
+            MipLevels: 1,
+            ArraySize: 1,
+            Format: RENDER_TARGET_FORMAT,
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
+            Usage: D3D11_USAGE_DEFAULT,
+            BindFlags: (D3D11_BIND_RENDER_TARGET.0 | D3D11_BIND_SHADER_RESOURCE.0) as u32,
+            CPUAccessFlags: 0,
+            MiscFlags: 0,
+        };
+        device.CreateTexture2D(&desc, None, Some(&mut output))?;
+        output.unwrap()
+    };
+
+    let mut srv = None;
+    unsafe { device.CreateShaderResourceView(&texture, None, Some(&mut srv))? };
+
+    let mut rtv = None;
+    unsafe { device.CreateRenderTargetView(&texture, None, Some(&mut rtv))? };
+
+    Ok((texture, Some(srv.unwrap()), Some(rtv.unwrap())))
 }
 
 #[inline]
@@ -1732,6 +1925,8 @@ pub(crate) mod shader_resources {
         SubpixelSprite,
         PolychromeSprite,
         EmojiRasterization,
+        BackdropBlurH,
+        BackdropBlurV,
     }
 
     #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -1808,6 +2003,14 @@ pub(crate) mod shader_resources {
                 ShaderModule::EmojiRasterization => match target {
                     ShaderTarget::Vertex => EMOJI_RASTERIZATION_VERTEX_BYTES,
                     ShaderTarget::Fragment => EMOJI_RASTERIZATION_FRAGMENT_BYTES,
+                },
+                ShaderModule::BackdropBlurH => match target {
+                    ShaderTarget::Vertex => BACKDROP_BLUR_H_VERTEX_BYTES,
+                    ShaderTarget::Fragment => BACKDROP_BLUR_H_FRAGMENT_BYTES,
+                },
+                ShaderModule::BackdropBlurV => match target {
+                    ShaderTarget::Vertex => BACKDROP_BLUR_V_VERTEX_BYTES,
+                    ShaderTarget::Fragment => BACKDROP_BLUR_V_FRAGMENT_BYTES,
                 },
             };
             Self { inner: bytes }
@@ -1896,6 +2099,8 @@ pub(crate) mod shader_resources {
                 ShaderModule::SubpixelSprite => "subpixel_sprite",
                 ShaderModule::PolychromeSprite => "polychrome_sprite",
                 ShaderModule::EmojiRasterization => "emoji_rasterization",
+                ShaderModule::BackdropBlurH => "backdrop_blur_h",
+                ShaderModule::BackdropBlurV => "backdrop_blur_v",
             }
         }
     }
