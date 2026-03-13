@@ -3511,6 +3511,7 @@ impl Window {
                 content_mask,
                 tile,
                 opacity,
+                transformation: TransformationMatrix::unit(),
             });
         }
         Ok(())
