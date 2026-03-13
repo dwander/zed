@@ -4,7 +4,7 @@ use crate::{
     HighlightKey, Navigated, PointForPosition, SelectPhase,
     editor_settings::GoToDefinitionFallback, scroll::ScrollAmount,
 };
-use gpui::{App, AsyncWindowContext, Context, Entity, Modifiers, Task, Window, px};
+use gpui::{App, AsyncWindowContext, Context, Entity, Modifiers, Pixels, Task, Window, px};
 use language::{Bias, ToOffset};
 use linkify::{LinkFinder, LinkKind};
 use lsp::LanguageServerId;
@@ -113,6 +113,7 @@ impl Editor {
     pub(crate) fn update_hovered_link(
         &mut self,
         point_for_position: PointForPosition,
+        mouse_position: Option<gpui::Point<Pixels>>,
         snapshot: &EditorSnapshot,
         modifiers: Modifiers,
         window: &mut Window,
@@ -138,6 +139,7 @@ impl Editor {
                 self.update_inlay_link_and_hover_points(
                     snapshot,
                     point_for_position,
+                    mouse_position,
                     hovered_link_modifier,
                     modifiers.shift,
                     window,
@@ -1861,6 +1863,69 @@ mod tests {
             Or go to ../dir/file2.rs if you want.
             Or go to C:/root/dir/file2.rs if project is local.
             Or go to «C:/root/dir/file2ˇ» if this is a Rust file.
+        "},
+        );
+
+        cx.simulate_click(screen_coord, Modifiers::secondary_key());
+
+        cx.update_workspace(|workspace, _, cx| assert_eq!(workspace.items(cx).count(), 2));
+        cx.update_workspace(|workspace, _, cx| {
+            let active_editor = workspace.active_item_as::<Editor>(cx).unwrap();
+
+            let buffer = active_editor
+                .read(cx)
+                .buffer()
+                .read(cx)
+                .as_singleton()
+                .unwrap();
+
+            let file = buffer.read(cx).file().unwrap();
+            let file_path = file.as_local().unwrap().abs_path(cx);
+
+            assert_eq!(
+                file_path,
+                std::path::PathBuf::from(path!("/root/dir/file2.rs"))
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn test_hover_filenames_with_worktree_prefix(cx: &mut gpui::TestAppContext) {
+        init_test(cx, |_| {});
+        let mut cx = EditorLspTestContext::new_rust(
+            lsp::ServerCapabilities {
+                ..Default::default()
+            },
+            cx,
+        )
+        .await;
+
+        let fs = cx.update_workspace(|workspace, _, cx| workspace.project().read(cx).fs().clone());
+        fs.as_fake()
+            .insert_file(
+                path!("/root/dir/file2.rs"),
+                "This is file2.rs".as_bytes().to_vec(),
+            )
+            .await;
+
+        #[cfg(not(target_os = "windows"))]
+        cx.set_state(indoc! {"
+            Go to root/dir/file2.rs if you want.ˇ
+        "});
+        #[cfg(target_os = "windows")]
+        cx.set_state(indoc! {"
+            Go to root/dir/file2.rs if you want.ˇ
+        "});
+
+        let screen_coord = cx.pixel_position(indoc! {"
+            Go to root/diˇr/file2.rs if you want.
+        "});
+
+        cx.simulate_mouse_move(screen_coord, None, Modifiers::secondary_key());
+        cx.assert_editor_text_highlights(
+            HighlightKey::HoveredLinkState,
+            indoc! {"
+            Go to «root/dir/file2.rsˇ» if you want.
         "},
         );
 

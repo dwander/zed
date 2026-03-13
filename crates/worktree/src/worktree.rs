@@ -1322,6 +1322,7 @@ impl LocalWorktree {
                         path,
                         disk_state: DiskState::Present {
                             mtime: metadata.mtime,
+                            size: metadata.len,
                         },
                         is_local: true,
                         is_private,
@@ -1378,6 +1379,7 @@ impl LocalWorktree {
                         path,
                         disk_state: DiskState::Present {
                             mtime: metadata.mtime,
+                            size: metadata.len,
                         },
                         is_local: true,
                         is_private,
@@ -1575,6 +1577,7 @@ impl LocalWorktree {
                     path,
                     disk_state: DiskState::Present {
                         mtime: metadata.mtime,
+                        size: metadata.len,
                     },
                     entry_id: None,
                     is_local: true,
@@ -2463,6 +2466,10 @@ impl Snapshot {
         &self.root_name
     }
 
+    pub fn root_name_arc(&self) -> Arc<RelPath> {
+        self.root_name.clone()
+    }
+
     pub fn root_name_str(&self) -> &str {
         self.root_name.as_unix_str()
     }
@@ -3289,7 +3296,10 @@ impl File {
             worktree,
             path: entry.path.clone(),
             disk_state: if let Some(mtime) = entry.mtime {
-                DiskState::Present { mtime }
+                DiskState::Present {
+                    mtime,
+                    size: entry.size,
+                }
             } else {
                 DiskState::New
             },
@@ -3318,7 +3328,7 @@ impl File {
         } else if proto.is_deleted {
             DiskState::Deleted
         } else if let Some(mtime) = proto.mtime.map(&Into::into) {
-            DiskState::Present { mtime }
+            DiskState::Present { mtime, size: 0 }
         } else {
             DiskState::New
         };

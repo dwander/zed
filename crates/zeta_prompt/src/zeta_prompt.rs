@@ -1,4 +1,5 @@
 pub mod excerpt_ranges;
+pub mod multi_region;
 
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
@@ -81,6 +82,7 @@ pub enum ZetaFormat {
     v0226Hashline,
     V0304VariableEdit,
     V0304SeedNoEdits,
+    V0306SeedMultiRegions,
 }
 
 impl std::fmt::Display for ZetaFormat {
@@ -218,6 +220,20 @@ pub fn special_tokens_for_format(format: ZetaFormat) -> &'static [&'static str] 
         ZetaFormat::v0226Hashline => hashline::special_tokens(),
         ZetaFormat::V0304VariableEdit => v0304_variable_edit::special_tokens(),
         ZetaFormat::V0304SeedNoEdits => seed_coder::special_tokens(),
+        ZetaFormat::V0306SeedMultiRegions => {
+            static TOKENS: &[&str] = &[
+                seed_coder::FIM_SUFFIX,
+                seed_coder::FIM_PREFIX,
+                seed_coder::FIM_MIDDLE,
+                seed_coder::FILE_MARKER,
+                seed_coder::START_MARKER,
+                seed_coder::SEPARATOR,
+                seed_coder::END_MARKER,
+                CURSOR_MARKER,
+                multi_region::MARKER_TAG_PREFIX,
+            ];
+            TOKENS
+        }
     }
 }
 
@@ -231,6 +247,7 @@ pub fn token_limits_for_format(format: ZetaFormat) -> (usize, usize) {
         | ZetaFormat::V0211Prefill
         | ZetaFormat::V0211SeedCoder
         | ZetaFormat::v0226Hashline
+        | ZetaFormat::V0306SeedMultiRegions
         | ZetaFormat::V0304SeedNoEdits => (350, 150),
         ZetaFormat::V0304VariableEdit => (1024, 0),
     }
@@ -247,6 +264,7 @@ pub fn stop_tokens_for_format(format: ZetaFormat) -> &'static [&'static str] {
         | ZetaFormat::V0211Prefill
         | ZetaFormat::V0211SeedCoder
         | ZetaFormat::V0304VariableEdit
+        | ZetaFormat::V0306SeedMultiRegions
         | ZetaFormat::V0304SeedNoEdits => &[],
     }
 }
@@ -269,7 +287,8 @@ pub fn excerpt_ranges_for_format(
         | ZetaFormat::V0211Prefill
         | ZetaFormat::V0211SeedCoder
         | ZetaFormat::v0226Hashline
-        | ZetaFormat::V0304SeedNoEdits => (
+        | ZetaFormat::V0304SeedNoEdits
+        | ZetaFormat::V0306SeedMultiRegions => (
             ranges.editable_350.clone(),
             ranges.editable_350_context_150.clone(),
         ),
@@ -344,7 +363,44 @@ pub fn write_cursor_excerpt_section_for_format(
         ZetaFormat::V0304VariableEdit => {
             v0304_variable_edit::write_cursor_excerpt_section(prompt, path, context, cursor_offset)
         }
+        ZetaFormat::V0306SeedMultiRegions => {
+            prompt.push_str(&build_v0306_cursor_prefix(
+                path,
+                context,
+                editable_range,
+                cursor_offset,
+            ));
+        }
     }
+}
+
+fn build_v0306_cursor_prefix(
+    path: &Path,
+    context: &str,
+    editable_range: &Range<usize>,
+    cursor_offset: usize,
+) -> String {
+    let mut section = String::new();
+    let path_str = path.to_string_lossy();
+    write!(section, "{}{}\n", seed_coder::FILE_MARKER, path_str).ok();
+
+    section.push_str(&context[..editable_range.start]);
+    section.push_str(seed_coder::START_MARKER);
+
+    let editable_text = &context[editable_range.clone()];
+    let cursor_in_editable = cursor_offset - editable_range.start;
+    multi_region::write_editable_with_markers(
+        &mut section,
+        editable_text,
+        cursor_in_editable,
+        CURSOR_MARKER,
+    );
+
+    if !section.ends_with('\n') {
+        section.push('\n');
+    }
+    section.push_str(seed_coder::SEPARATOR);
+    section
 }
 
 fn offset_range_to_row_range(text: &str, range: Range<usize>) -> Range<u32> {
@@ -392,6 +448,18 @@ pub fn format_prompt_with_budget_for_format(
                 max_tokens,
             )
         }
+        ZetaFormat::V0306SeedMultiRegions => {
+            let cursor_prefix =
+                build_v0306_cursor_prefix(path, context, &editable_range, cursor_offset);
+            seed_coder::assemble_fim_prompt(
+                context,
+                &editable_range,
+                &cursor_prefix,
+                &input.events,
+                related_files,
+                max_tokens,
+            )
+        }
         _ => {
             let mut cursor_section = String::new();
             write_cursor_excerpt_section_for_format(
@@ -411,6 +479,7 @@ pub fn format_prompt_with_budget_for_format(
                 "<|file_sep|>",
                 "edit history",
                 budget_after_cursor,
+                max_edit_event_count_for_format(&format),
             );
             let edit_history_tokens = estimate_tokens(edit_history_section.len());
             let budget_after_edit_history = budget_after_cursor.saturating_sub(edit_history_tokens);
@@ -448,6 +517,22 @@ pub fn filter_redundant_excerpts(
     related_files
 }
 
+pub fn max_edit_event_count_for_format(format: &ZetaFormat) -> usize {
+    match format {
+        ZetaFormat::V0112MiddleAtEnd
+        | ZetaFormat::V0113Ordered
+        | ZetaFormat::V0114180EditableRegion
+        | ZetaFormat::V0120GitMergeMarkers
+        | ZetaFormat::V0131GitMergeMarkersPrefix
+        | ZetaFormat::V0211Prefill
+        | ZetaFormat::V0211SeedCoder
+        | ZetaFormat::v0226Hashline
+        | ZetaFormat::V0304SeedNoEdits
+        | ZetaFormat::V0304VariableEdit
+        | ZetaFormat::V0306SeedMultiRegions => 6,
+    }
+}
+
 pub fn get_prefill_for_format(
     format: ZetaFormat,
     context: &str,
@@ -463,7 +548,7 @@ pub fn get_prefill_for_format(
         | ZetaFormat::V0211SeedCoder
         | ZetaFormat::v0226Hashline
         | ZetaFormat::V0304VariableEdit => String::new(),
-        ZetaFormat::V0304SeedNoEdits => String::new(),
+        ZetaFormat::V0304SeedNoEdits | ZetaFormat::V0306SeedMultiRegions => String::new(),
     }
 }
 
@@ -472,7 +557,9 @@ pub fn output_end_marker_for_format(format: ZetaFormat) -> Option<&'static str> 
         ZetaFormat::V0120GitMergeMarkers => Some(v0120_git_merge_markers::END_MARKER),
         ZetaFormat::V0131GitMergeMarkersPrefix => Some(v0131_git_merge_markers_prefix::END_MARKER),
         ZetaFormat::V0211Prefill => Some(v0131_git_merge_markers_prefix::END_MARKER),
-        ZetaFormat::V0211SeedCoder | ZetaFormat::V0304SeedNoEdits => Some(seed_coder::END_MARKER),
+        ZetaFormat::V0211SeedCoder
+        | ZetaFormat::V0304SeedNoEdits
+        | ZetaFormat::V0306SeedMultiRegions => Some(seed_coder::END_MARKER),
         ZetaFormat::V0112MiddleAtEnd
         | ZetaFormat::V0113Ordered
         | ZetaFormat::V0114180EditableRegion
@@ -497,7 +584,9 @@ pub fn encode_patch_as_output_for_format(
             cursor_offset,
         )
         .map(Some),
-        ZetaFormat::V0304SeedNoEdits => Ok(seed_coder::no_edits(patch)),
+        ZetaFormat::V0304SeedNoEdits | ZetaFormat::V0306SeedMultiRegions => {
+            Ok(seed_coder::no_edits(patch))
+        }
         _ => Ok(None),
     }
 }
@@ -541,6 +630,14 @@ pub fn parse_zeta2_model_output(
                 old_editable_region.to_string()
             } else {
                 output.to_string()
+            },
+        ),
+        ZetaFormat::V0306SeedMultiRegions => (
+            editable_range_in_context,
+            if output.starts_with(seed_coder::NO_EDITS) {
+                old_editable_region.to_string()
+            } else {
+                multi_region::apply_marker_span(old_editable_region, output)?
             },
         ),
         _ => (editable_range_in_context, output.to_string()),
@@ -602,6 +699,7 @@ fn format_edit_history_within_budget(
     file_marker: &str,
     edit_history_name: &str,
     max_tokens: usize,
+    max_edit_event_count: usize,
 ) -> String {
     let header = format!("{}{}\n", file_marker, edit_history_name);
     let header_tokens = estimate_tokens(header.len());
@@ -612,7 +710,7 @@ fn format_edit_history_within_budget(
     let mut event_strings: Vec<String> = Vec::new();
     let mut total_tokens = header_tokens;
 
-    for event in events.iter().rev() {
+    for event in events.iter().rev().take(max_edit_event_count) {
         let mut event_str = String::new();
         write_event(&mut event_str, event);
         let event_tokens = estimate_tokens(event_str.len());
@@ -2587,9 +2685,27 @@ pub mod seed_coder {
         related_files: &[RelatedFile],
         max_tokens: usize,
     ) -> String {
-        let suffix_section = build_suffix_section(context, editable_range);
         let cursor_prefix_section =
             build_cursor_prefix_section(path, context, editable_range, cursor_offset);
+        assemble_fim_prompt(
+            context,
+            editable_range,
+            &cursor_prefix_section,
+            events,
+            related_files,
+            max_tokens,
+        )
+    }
+
+    pub fn assemble_fim_prompt(
+        context: &str,
+        editable_range: &Range<usize>,
+        cursor_prefix_section: &str,
+        events: &[Arc<Event>],
+        related_files: &[RelatedFile],
+        max_tokens: usize,
+    ) -> String {
+        let suffix_section = build_suffix_section(context, editable_range);
 
         let suffix_tokens = estimate_tokens(suffix_section.len());
         let cursor_prefix_tokens = estimate_tokens(cursor_prefix_section.len());
@@ -2600,6 +2716,7 @@ pub mod seed_coder {
             FILE_MARKER,
             "edit_history",
             budget_after_cursor,
+            max_edit_event_count_for_format(&ZetaFormat::V0211SeedCoder),
         );
         let edit_history_tokens = estimate_tokens(edit_history_section.len());
         let budget_after_edit_history = budget_after_cursor.saturating_sub(edit_history_tokens);
@@ -2622,7 +2739,7 @@ pub mod seed_coder {
         if !edit_history_section.is_empty() {
             prompt.push('\n');
         }
-        prompt.push_str(&cursor_prefix_section);
+        prompt.push_str(cursor_prefix_section);
         prompt.push_str(FIM_MIDDLE);
         prompt
     }
@@ -3726,7 +3843,13 @@ pub mod zeta1 {
     /// Formats events in zeta1 style (oldest first).
     fn format_zeta1_events(events: &[Arc<Event>]) -> String {
         let mut result = String::new();
-        for event in events {
+        for event in
+            events
+                .iter()
+                .skip(events.len().saturating_sub(max_edit_event_count_for_format(
+                    &ZetaFormat::V0114180EditableRegion,
+                )))
+        {
             let event_string = format_zeta1_event(event);
             if event_string.is_empty() {
                 continue;
@@ -4681,6 +4804,87 @@ mod tests {
                 "### Response:\n",
             ),
         );
+    }
+
+    #[test]
+    fn test_max_event_count() {
+        fn make_numbered_event(index: usize) -> Event {
+            return make_event(
+                &format!("event-{index}.rs"),
+                &format!("-old-{index}\n+new-{index}\n"),
+            );
+        }
+        let input = make_input(
+            "x",
+            0..1,
+            0,
+            (0..3).map(make_numbered_event).collect(),
+            vec![],
+        );
+
+        let edit_history_section = format_edit_history_within_budget(
+            &input.events,
+            "<|file_sep|>",
+            "edit history",
+            usize::MAX,
+            5,
+        );
+
+        assert_eq!(
+            &edit_history_section,
+            indoc!(
+                "
+                <|file_sep|>edit history
+                --- a/event-0.rs
+                +++ b/event-0.rs
+                -old-0
+                +new-0
+                --- a/event-1.rs
+                +++ b/event-1.rs
+                -old-1
+                +new-1
+                --- a/event-2.rs
+                +++ b/event-2.rs
+                -old-2
+                +new-2
+            "
+            )
+        );
+
+        let edit_history_section = format_edit_history_within_budget(
+            &input.events,
+            "<|file_sep|>",
+            "edit history",
+            usize::MAX,
+            2,
+        );
+
+        assert_eq!(
+            &edit_history_section,
+            indoc!(
+                "
+                <|file_sep|>edit history
+                --- a/event-1.rs
+                +++ b/event-1.rs
+                -old-1
+                +new-1
+                --- a/event-2.rs
+                +++ b/event-2.rs
+                -old-2
+                +new-2
+            "
+            )
+        );
+
+        let edit_history_section = format_edit_history_within_budget(
+            &input.events,
+            "<|file_sep|>",
+            "edit history",
+            usize::MAX,
+            0,
+        );
+
+        assert_eq!(&edit_history_section, "");
     }
 
     #[test]

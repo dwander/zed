@@ -68,7 +68,6 @@ use settings::{
     initial_local_debug_tasks_content, initial_project_settings_content, initial_tasks_content,
     update_settings_file,
 };
-use sidebar::Sidebar;
 use std::time::Duration;
 use std::{
     borrow::Cow,
@@ -163,21 +162,24 @@ pub fn init(cx: &mut App) {
     cx.on_action(quit);
 
     cx.on_action(|_: &RestoreBanner, cx| title_bar::restore_banner(cx));
-    let flag = cx.wait_for_flag::<PanicFeatureFlag>();
-    cx.spawn(async |cx| {
-        if cx.update(|cx| ReleaseChannel::global(cx) == ReleaseChannel::Dev) || flag.await {
-            cx.update(|cx| {
-                cx.on_action(|_: &TestPanic, _| panic!("Ran the TestPanic action"))
-                    .on_action(|_: &TestCrash, _| {
-                        unsafe extern "C" {
-                            fn puts(s: *const i8);
-                        }
-                        unsafe {
-                            puts(0xabad1d3a as *const i8);
-                        }
-                    });
-            });
-        };
+
+    cx.observe_flag::<PanicFeatureFlag, _>({
+        let mut added = false;
+        move |enabled, cx| {
+            if added || !enabled {
+                return;
+            }
+            added = true;
+            cx.on_action(|_: &TestPanic, _| panic!("Ran the TestPanic action"))
+                .on_action(|_: &TestCrash, _| {
+                    unsafe extern "C" {
+                        fn puts(s: *const i8);
+                    }
+                    unsafe {
+                        puts(0xabad1d3a as *const i8);
+                    }
+                });
+        }
     })
     .detach();
     cx.on_action(|_: &OpenLog, cx| {
@@ -340,7 +342,7 @@ pub fn build_window_options(display_uuid: Option<Uuid>, cx: &mut App) -> WindowO
         focus: false,
         show: false,
         kind: WindowKind::Normal,
-        is_movable: true,
+        is_movable: !cfg!(target_os = "macos"),
         display_id: display.map(|display| display.id()),
         window_background: cx.theme().window_background_appearance(),
         app_id: Some(app_id.to_owned()),
@@ -385,20 +387,6 @@ pub fn initialize_workspace(
                     false
                 })
                 .unwrap_or(true)
-        });
-
-        let window_handle = window.window_handle();
-        let multi_workspace_handle = cx.entity();
-        cx.defer(move |cx| {
-            window_handle
-                .update(cx, |_, window, cx| {
-                    let sidebar =
-                        cx.new(|cx| Sidebar::new(multi_workspace_handle.clone(), window, cx));
-                    multi_workspace_handle.update(cx, |multi_workspace, cx| {
-                        multi_workspace.register_sidebar(sidebar, window, cx);
-                    });
-                })
-                .ok();
         });
     })
     .detach();
@@ -1078,37 +1066,54 @@ fn register_actions(
         })
         .register_action({
             let app_state = Arc::downgrade(&app_state);
-            move |_, _: &CloseProject, window, cx| {
+            move |_workspace, _: &CloseProject, window, cx| {
                 let Some(window_handle) = window.window_handle().downcast::<MultiWorkspace>() else {
                     return;
                 };
                 if let Some(app_state) = app_state.upgrade() {
-                    open_new(
-                        workspace::OpenOptions {
-                            replace_window: Some(window_handle),
-                            ..Default::default()
-                        },
-                        app_state,
-                        cx,
-                        |workspace, window, cx| {
-                            cx.activate(true);
-                            // Create buffer synchronously to avoid flicker
-                            let project = workspace.project().clone();
-                            let buffer = project.update(cx, |project, cx| {
-                                project.create_local_buffer("", None, true, cx)
-                            });
-                            let editor = cx.new(|cx| {
-                                Editor::for_buffer(buffer, Some(project), window, cx)
-                            });
-                            workspace.add_item_to_active_pane(
-                                Box::new(editor),
-                                None,
-                                true,
-                                window,
-                                cx,
-                            );
-                        },
-                    )
+                    cx.spawn_in(window, async move |this, cx| {
+                        let should_continue = this
+                            .update_in(cx, |workspace, window, cx| {
+                                workspace.prepare_to_close(
+                                    CloseIntent::ReplaceWindow,
+                                    window,
+                                    cx,
+                                )
+                            })?
+                            .await?;
+                        if should_continue {
+                            let task = cx.update(|_window, cx| {
+                                open_new(
+                                    workspace::OpenOptions {
+                                        replace_window: Some(window_handle),
+                                        ..Default::default()
+                                    },
+                                    app_state,
+                                    cx,
+                                    |workspace, window, cx| {
+                                        cx.activate(true);
+                                        let project = workspace.project().clone();
+                                        let buffer = project.update(cx, |project, cx| {
+                                            project.create_local_buffer("", None, true, cx)
+                                        });
+                                        let editor = cx.new(|cx| {
+                                            Editor::for_buffer(buffer, Some(project), window, cx)
+                                        });
+                                        workspace.add_item_to_active_pane(
+                                            Box::new(editor),
+                                            None,
+                                            true,
+                                            window,
+                                            cx,
+                                        );
+                                    },
+                                )
+                            })?;
+                            task.await
+                        } else {
+                            Ok(())
+                        }
+                    })
                     .detach_and_log_err(cx);
                 }
             }
@@ -3454,7 +3459,11 @@ mod tests {
             PathBuf::from(path!("/root/.git/HEAD")),
             PathBuf::from(path!("/root/excluded_dir/ignored_subdir")),
         ];
-        let (opened_workspace, new_items) = cx
+        let workspace::OpenResult {
+            window: opened_workspace,
+            opened_items: new_items,
+            ..
+        } = cx
             .update(|cx| {
                 workspace::open_paths(
                     &paths_to_open,
@@ -4890,6 +4899,7 @@ mod tests {
                 "task",
                 "terminal",
                 "terminal_panel",
+                "theme",
                 "theme_selector",
                 "toast",
                 "toolchain",
@@ -5877,7 +5887,9 @@ mod tests {
         //
         //   Window A: workspace for dir1, workspace for dir2
         //   Window B: workspace for dir3
-        let (window_a, _) = cx
+        let workspace::OpenResult {
+            window: window_a, ..
+        } = cx
             .update(|cx| {
                 Workspace::new_local(
                     vec![dir1.into()],
@@ -5901,7 +5913,9 @@ mod tests {
             .expect("failed to open second workspace into window A");
         cx.run_until_parked();
 
-        let (window_b, _) = cx
+        let workspace::OpenResult {
+            window: window_b, ..
+        } = cx
             .update(|cx| {
                 Workspace::new_local(
                     vec![dir3.into()],
