@@ -939,6 +939,13 @@ impl App {
         self.platform.is_cursor_visible()
     }
 
+    /// Registers a custom image cursor and returns a [`CursorStyle`] that can be passed to
+    /// `.cursor(..)`. Platforms without support return [`CursorStyle::Arrow`].
+    /// (Currently implemented on Windows.)
+    pub fn register_custom_cursor(&self, image: &crate::CustomCursorImage) -> CursorStyle {
+        self.platform.register_custom_cursor(image)
+    }
+
     /// Schedules all windows in the application to be redrawn. This can be called
     /// multiple times in an update cycle and still result in a single redraw.
     pub fn refresh_windows(&mut self) {

@@ -1995,6 +1995,8 @@ extern "C" fn reset_cursor_rects(this: &Object, _: Sel) {
             CursorStyle::DragLink => msg_send![class!(NSCursor), dragLinkCursor],
             CursorStyle::DragCopy => msg_send![class!(NSCursor), dragCopyCursor],
             CursorStyle::ContextualMenu => msg_send![class!(NSCursor), contextualMenuCursor],
+            // 커스텀 이미지 커서는 아직 macOS 미구현 → 기본 화살표 폴백.
+            CursorStyle::Custom(_) => msg_send![class!(NSCursor), arrowCursor],
         };
 
         let bounds = NSView::bounds(this as *const Object as id);

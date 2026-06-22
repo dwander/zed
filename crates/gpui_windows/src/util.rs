@@ -8,7 +8,13 @@ use windows::{
         ViewManagement::{UIColorType, UISettings},
     },
     Win32::{
-        Foundation::*, Graphics::Dwm::*, System::LibraryLoader::LoadLibraryA,
+        Foundation::*,
+        Graphics::Dwm::*,
+        Graphics::Gdi::{
+            BITMAPINFO, BITMAPINFOHEADER, CreateBitmap, CreateDIBSection, DIB_RGB_COLORS,
+            DeleteObject, HGDIOBJ,
+        },
+        System::LibraryLoader::LoadLibraryA,
         UI::WindowsAndMessaging::*,
     },
     core::{BOOL, PCSTR},
@@ -128,6 +134,67 @@ pub(crate) fn load_cursor(style: CursorStyle) -> Option<HCURSOR> {
             .into()
         })),
     )
+}
+
+/// Builds an `HCURSOR` from a [`CustomCursorImage`] (RGBA8, top-down) with a hotspot.
+/// Returns `None` on invalid input or any GDI failure. The returned cursor is owned by the
+/// caller (kept for the app lifetime; freed implicitly at process exit).
+pub(crate) fn create_custom_cursor(image: &CustomCursorImage) -> Option<HCURSOR> {
+    let w = image.width as i32;
+    let h = image.height as i32;
+    if w <= 0 || h <= 0 || image.rgba.len() < (image.width as usize * image.height as usize * 4) {
+        return None;
+    }
+    unsafe {
+        // 32bpp top-down DIB (컬러) — biHeight 음수 = top-down.
+        let bmi = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER {
+                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: w,
+                biHeight: -h,
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: 0, // BI_RGB
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut bits: *mut core::ffi::c_void = std::ptr::null_mut();
+        let color = CreateDIBSection(None, &bmi, DIB_RGB_COLORS, &mut bits, None, 0).log_err()?;
+        if bits.is_null() {
+            let _ = DeleteObject(HGDIOBJ(color.0));
+            return None;
+        }
+        // RGBA → BGRA 로 DIB 에 복사 (Windows 32bpp 비트맵은 BGRA).
+        let dst = std::slice::from_raw_parts_mut(bits as *mut u8, (w * h * 4) as usize);
+        for (i, px) in image.rgba.chunks_exact(4).take((w * h) as usize).enumerate() {
+            let o = i * 4;
+            dst[o] = px[2]; // B
+            dst[o + 1] = px[1]; // G
+            dst[o + 2] = px[0]; // R
+            dst[o + 3] = px[3]; // A
+        }
+        // 모노크롬 AND 마스크 (전부 0 = 알파 채널로 투명 처리).
+        let mask_stride = (((w + 15) / 16) * 2) as usize;
+        let mask_bits = vec![0u8; mask_stride * h as usize];
+        let mask = CreateBitmap(w, h, 1, 1, Some(mask_bits.as_ptr() as *const _));
+        if mask.0.is_null() {
+            let _ = DeleteObject(HGDIOBJ(color.0));
+            return None;
+        }
+        let icon_info = ICONINFO {
+            fIcon: BOOL(0), // FALSE → 커서(핫스팟 사용)
+            xHotspot: image.hot_x,
+            yHotspot: image.hot_y,
+            hbmMask: mask,
+            hbmColor: color,
+        };
+        let hicon = CreateIconIndirect(&icon_info);
+        // CreateIconIndirect 가 비트맵을 복사하므로 원본은 즉시 해제 가능.
+        let _ = DeleteObject(HGDIOBJ(color.0));
+        let _ = DeleteObject(HGDIOBJ(mask.0));
+        Some(HCURSOR(hicon.log_err()?.0))
+    }
 }
 
 /// This function is used to configure the dark mode for the window built-in title bar.

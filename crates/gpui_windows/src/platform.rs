@@ -1,5 +1,6 @@
 use std::{
     cell::{Cell, RefCell},
+    collections::HashMap,
     ffi::OsStr,
     path::{Path, PathBuf},
     rc::{Rc, Weak},
@@ -63,6 +64,9 @@ pub(crate) struct WindowsPlatformState {
     jump_list: RefCell<JumpList>,
     // NOTE: standard cursor handles don't need to close.
     pub(crate) current_cursor: Cell<Option<HCURSOR>>,
+    /// Registered custom image cursors (id → HCURSOR), kept for the app lifetime.
+    pub(crate) custom_cursors: RefCell<HashMap<u32, HCURSOR>>,
+    custom_cursor_next_id: Cell<u32>,
     /// Shared with each window so `WM_SETCURSOR` can read it directly.
     pub(crate) cursor_visible: Arc<AtomicBool>,
     directx_devices: RefCell<Option<DirectXDevices>>,
@@ -89,6 +93,8 @@ impl WindowsPlatformState {
             callbacks,
             jump_list: RefCell::new(jump_list),
             current_cursor: Cell::new(current_cursor),
+            custom_cursors: RefCell::new(HashMap::new()),
+            custom_cursor_next_id: Cell::new(0),
             cursor_visible: Arc::new(AtomicBool::new(true)),
             directx_devices: RefCell::new(directx_devices),
             menus: RefCell::new(Vec::new()),
@@ -674,7 +680,11 @@ impl Platform for WindowsPlatform {
     }
 
     fn set_cursor_style(&self, style: CursorStyle) {
-        let hcursor = load_cursor(style);
+        let hcursor = match style {
+            // 등록된 커스텀 이미지 커서는 맵에서 조회(없으면 None → 시스템 기본).
+            CursorStyle::Custom(id) => self.inner.state.custom_cursors.borrow().get(&id).copied(),
+            _ => load_cursor(style),
+        };
         if self.inner.state.current_cursor.get().map(|c| c.0) != hcursor.map(|c| c.0) {
             self.post_message(
                 WM_GPUI_CURSOR_STYLE_CHANGED,
@@ -683,6 +693,16 @@ impl Platform for WindowsPlatform {
             );
             self.inner.state.current_cursor.set(hcursor);
         }
+    }
+
+    fn register_custom_cursor(&self, image: &CustomCursorImage) -> CursorStyle {
+        let Some(hcursor) = create_custom_cursor(image) else {
+            return CursorStyle::Arrow;
+        };
+        let id = self.inner.state.custom_cursor_next_id.get();
+        self.inner.state.custom_cursor_next_id.set(id + 1);
+        self.inner.state.custom_cursors.borrow_mut().insert(id, hcursor);
+        CursorStyle::Custom(id)
     }
 
     fn hide_cursor_until_mouse_moves(&self) {

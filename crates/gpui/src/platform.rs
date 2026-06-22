@@ -219,6 +219,12 @@ pub trait Platform: 'static {
 
     fn set_cursor_style(&self, style: CursorStyle);
 
+    /// Registers a custom image cursor and returns a [`CursorStyle`] referencing it.
+    /// Platforms without support return [`CursorStyle::Arrow`] (the default impl).
+    fn register_custom_cursor(&self, _image: &CustomCursorImage) -> CursorStyle {
+        CursorStyle::Arrow
+    }
+
     /// Hides the mouse cursor until the user moves the mouse over one of
     /// this application's windows.
     fn hide_cursor_until_mouse_moves(&self);
@@ -1823,6 +1829,22 @@ impl From<&str> for PromptButton {
     }
 }
 
+/// A custom image cursor source (RGBA8, row-major, top-down) + hotspot, for
+/// [`Platform::register_custom_cursor`] / [`App::register_custom_cursor`](crate::App::register_custom_cursor).
+#[derive(Clone, Debug)]
+pub struct CustomCursorImage {
+    /// Pixel data, `width * height * 4` bytes, RGBA8 (top-down).
+    pub rgba: Vec<u8>,
+    /// Image width in pixels.
+    pub width: u32,
+    /// Image height in pixels.
+    pub height: u32,
+    /// Hotspot x (click point) in image pixels.
+    pub hot_x: u32,
+    /// Hotspot y (click point) in image pixels.
+    pub hot_y: u32,
+}
+
 /// The style of the cursor (pointer)
 #[derive(Copy, Clone, Default, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub enum CursorStyle {
@@ -1909,6 +1931,12 @@ pub enum CursorStyle {
     /// A cursor indicating that the operation will result in a context menu
     /// corresponds to the CSS cursor value `context-menu`
     ContextualMenu,
+
+    /// A custom image cursor previously registered via
+    /// [`App::register_custom_cursor`](crate::App::register_custom_cursor),
+    /// identified by an interned id. Platforms without custom-cursor support fall back to
+    /// [`CursorStyle::Arrow`]. (Currently implemented on Windows.)
+    Custom(u32),
 }
 
 /// A clipboard item that should be copied to the clipboard
