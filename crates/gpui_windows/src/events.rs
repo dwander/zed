@@ -1085,16 +1085,19 @@ impl WindowsWindowInner {
     }
 
     fn handle_cursor_changed(&self, lparam: LPARAM) -> Option<isize> {
-        let had_cursor = self.state.current_cursor.get().is_some();
-
-        self.state.current_cursor.set(if lparam.0 == 0 {
+        let new_cursor = if lparam.0 == 0 {
             None
         } else {
             Some(HCURSOR(lparam.0 as _))
-        });
+        };
 
-        if had_cursor != self.state.current_cursor.get().is_some() {
-            unsafe { SetCursor(self.state.current_cursor.get()) };
+        // 커서 핸들이 실제로 바뀌면 즉시 SetCursor. None↔Some 전환뿐 아니라 커서↔커서(예: 드래그 중
+        // 화살표→폴더) 변경도 반영해야 한다. 드래그 중에는 마우스 캡처로 WM_SETCURSOR 가 늦게 와서
+        // 이 즉시 적용이 없으면 포커스가 바뀔 때까지 커서가 갱신되지 않는다.
+        let changed = self.state.current_cursor.get().map(|c| c.0) != new_cursor.map(|c| c.0);
+        self.state.current_cursor.set(new_cursor);
+        if changed {
+            unsafe { SetCursor(new_cursor) };
         }
 
         Some(0)

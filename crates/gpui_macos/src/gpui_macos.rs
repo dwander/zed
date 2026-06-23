@@ -7,6 +7,7 @@
 mod dispatcher;
 mod display;
 mod display_link;
+mod custom_cursor;
 mod events;
 mod keyboard;
 mod pasteboard;

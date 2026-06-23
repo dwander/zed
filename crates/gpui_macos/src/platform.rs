@@ -28,7 +28,8 @@ use ctor::ctor;
 use dispatch2::DispatchQueue;
 use futures::channel::oneshot;
 use gpui::{
-    Action, AnyWindowHandle, BackgroundExecutor, ClipboardItem, CursorStyle, ForegroundExecutor,
+    Action, AnyWindowHandle, BackgroundExecutor, ClipboardItem, CursorStyle, CustomCursorImage,
+    ForegroundExecutor,
     KeyContext, Keymap, Menu, MenuItem, OsMenu, OwnedMenu, PathPromptOptions, Platform,
     PlatformDisplay, PlatformKeyboardLayout, PlatformKeyboardMapper, PlatformTextSystem,
     PlatformWindow, Result, SystemMenuType, Task, ThermalState, WindowAppearance, WindowParams,
@@ -1005,6 +1006,13 @@ impl Platform for MacPlatform {
         unsafe {
             set_active_window_cursor_style(style);
         }
+    }
+
+    fn register_custom_cursor(&self, image: &CustomCursorImage) -> CursorStyle {
+        // RGBA → NSCursor 등록 (메인 스레드). 실패 시 화살표 폴백.
+        crate::custom_cursor::register(image)
+            .map(CursorStyle::Custom)
+            .unwrap_or(CursorStyle::Arrow)
     }
 
     fn hide_cursor_until_mouse_moves(&self) {
