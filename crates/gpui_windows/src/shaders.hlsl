@@ -1245,7 +1245,17 @@ PolychromeSpriteVertexOutput polychrome_sprite_vertex(uint vertex_id: SV_VertexI
 
 float4 polychrome_sprite_fragment(PolychromeSpriteFragmentInput input): SV_Target {
     PolychromeSprite sprite = poly_sprites[input.sprite_id];
-    float4 sample = t_sprite.Sample(s_sprite, input.tile_position);
+
+    // Linear 샘플링 시 타일 경계에서 이웃 타일 픽셀과 블렌딩되는 문제(확대 이미지 외곽 블러) 방지 —
+    // UV 좌표를 타일 내부로 0.5 텍셀만큼 클램핑 (dwander/zed 패치 7711bd14 이식).
+    float2 atlas_size;
+    t_sprite.GetDimensions(atlas_size.x, atlas_size.y);
+    float2 half_texel = 0.5 / atlas_size;
+    float2 tile_min = float2(sprite.tile.bounds.origin) / atlas_size + half_texel;
+    float2 tile_max = float2(sprite.tile.bounds.origin + sprite.tile.bounds.size) / atlas_size - half_texel;
+    float2 clamped_uv = clamp(input.tile_position, tile_min, tile_max);
+
+    float4 sample = t_sprite.Sample(s_sprite, clamped_uv);
     float distance = quad_sdf(input.position.xy, sprite.bounds, sprite.corner_radii);
 
     float4 color = sample;
