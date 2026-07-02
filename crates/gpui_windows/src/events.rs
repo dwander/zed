@@ -926,7 +926,11 @@ impl WindowsWindowInner {
         };
 
         unsafe { ScreenToClient(handle, &mut cursor_point).ok().log_err() };
-        if !self.state.is_maximized() && 0 <= cursor_point.y && cursor_point.y <= frame_y {
+        if self.is_resizable
+            && !self.state.is_maximized()
+            && 0 <= cursor_point.y
+            && cursor_point.y <= frame_y
+        {
             // x-axis actually goes from -frame_x to 0
             return Some(if cursor_point.x <= 0 {
                 HTTOPLEFT
