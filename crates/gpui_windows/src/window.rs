@@ -6,7 +6,10 @@ use std::{
     path::PathBuf,
     rc::{Rc, Weak},
     str::FromStr,
-    sync::{Arc, Once, atomic::AtomicBool},
+    sync::{
+        Arc, Once,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -1074,6 +1077,51 @@ impl accesskit::ActionHandler for A11yActionHandler {
     }
 }
 
+/// True while an in-app-initiated OLE drag-out (started elsewhere in the host app, not by
+/// this drop target) is in flight. Lets [`WindowsDragDropHandler`] tell "dragging our own
+/// items over our own window" apart from "external source (e.g. Explorer) dragging into us" —
+/// only the former lets Shift switch the *commit* effect reported in `Drop` (see
+/// [`commit_drop_effect`]). The hover effect shown in `DragEnter`/`DragOver` reflects Shift
+/// unconditionally — see [`set_internal_drag_active`].
+static INTERNAL_DRAG_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// Marks whether an in-app-initiated OLE drag is currently in flight. The host app calls this
+/// with `true` immediately before starting its own blocking drag-out call and `false` right
+/// after it returns, so [`WindowsDragDropHandler`] knows when it's safe to let modifier keys
+/// affect the *commit* drop effect it reports back to the drag source at `Drop`.
+pub fn set_internal_drag_active(active: bool) {
+    INTERNAL_DRAG_ACTIVE.store(active, Ordering::SeqCst);
+}
+
+/// Drop effect to show while hovering (`DragEnter`/`DragOver`) — purely cosmetic feedback that
+/// drives the drag source's cursor/badge via `GiveFeedback`. Always reflects Shift regardless
+/// of source: unlike the commit effect below, a hover-only value can't make anything delete
+/// files, so there's no data-loss risk in previewing "move" for an external source too.
+fn hover_drop_effect(grfkeystate: MODIFIERKEYS_FLAGS) -> DROPEFFECT {
+    if (grfkeystate & MK_SHIFT).0 != 0 {
+        DROPEFFECT_MOVE
+    } else {
+        DROPEFFECT_COPY
+    }
+}
+
+/// Drop effect to commit at `Drop` — this is what the (possibly external) drag source's own
+/// `DoDragDrop` call sees as the final outcome, and for shell `IDataObject`/`CF_HDROP` drags,
+/// `MOVE` tells the **source** to delete its own originals (the same protocol our own outbound
+/// `drag_export` relies on to finish a move). That's only safe to report for an in-app-
+/// initiated drag ([`INTERNAL_DRAG_ACTIVE`]), where the source side only self-deletes when the
+/// target didn't already claim the drop (`handled_in_app`). An external source (e.g. Explorer)
+/// must always get `COPY` here — otherwise it would delete its originals itself, racing our own
+/// (possibly still-async) copy, even though our drop handler already performs the move
+/// correctly on its own by reading the same modifier state independently.
+fn commit_drop_effect(grfkeystate: MODIFIERKEYS_FLAGS) -> DROPEFFECT {
+    if INTERNAL_DRAG_ACTIVE.load(Ordering::SeqCst) && (grfkeystate & MK_SHIFT).0 != 0 {
+        DROPEFFECT_MOVE
+    } else {
+        DROPEFFECT_COPY
+    }
+}
+
 #[implement(IDropTarget)]
 struct WindowsDragDropHandler(pub Rc<WindowsWindowInner>);
 
@@ -1091,7 +1139,7 @@ impl IDropTarget_Impl for WindowsDragDropHandler_Impl {
     fn DragEnter(
         &self,
         pdataobj: windows::core::Ref<IDataObject>,
-        _grfkeystate: MODIFIERKEYS_FLAGS,
+        grfkeystate: MODIFIERKEYS_FLAGS,
         pt: &POINTL,
         pdweffect: *mut DROPEFFECT,
     ) -> windows::core::Result<()> {
@@ -1106,7 +1154,7 @@ impl IDropTarget_Impl for WindowsDragDropHandler_Impl {
             };
             let cursor_position = POINT { x: pt.x, y: pt.y };
             if idata_obj.QueryGetData(&config as _) == S_OK {
-                *pdweffect = DROPEFFECT_COPY;
+                *pdweffect = hover_drop_effect(grfkeystate);
                 let Some(mut idata) = idata_obj.GetData(&config as _).log_err() else {
                     return Ok(());
                 };
@@ -1148,13 +1196,13 @@ impl IDropTarget_Impl for WindowsDragDropHandler_Impl {
 
     fn DragOver(
         &self,
-        _grfkeystate: MODIFIERKEYS_FLAGS,
+        grfkeystate: MODIFIERKEYS_FLAGS,
         pt: &POINTL,
         pdweffect: *mut DROPEFFECT,
     ) -> windows::core::Result<()> {
         let mut cursor_position = POINT { x: pt.x, y: pt.y };
         unsafe {
-            *pdweffect = DROPEFFECT_COPY;
+            *pdweffect = hover_drop_effect(grfkeystate);
             self.0
                 .drop_target_helper
                 .DragOver(&cursor_position, *pdweffect)
@@ -1189,14 +1237,14 @@ impl IDropTarget_Impl for WindowsDragDropHandler_Impl {
     fn Drop(
         &self,
         pdataobj: windows::core::Ref<IDataObject>,
-        _grfkeystate: MODIFIERKEYS_FLAGS,
+        grfkeystate: MODIFIERKEYS_FLAGS,
         pt: &POINTL,
         pdweffect: *mut DROPEFFECT,
     ) -> windows::core::Result<()> {
         let idata_obj = pdataobj.ok()?;
         let mut cursor_position = POINT { x: pt.x, y: pt.y };
         unsafe {
-            *pdweffect = DROPEFFECT_COPY;
+            *pdweffect = commit_drop_effect(grfkeystate);
             self.0
                 .drop_target_helper
                 .Drop(idata_obj, &cursor_position, *pdweffect)
