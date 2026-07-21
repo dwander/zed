@@ -349,16 +349,27 @@ fn paint_line(
             line_height * (wrap_boundaries.len() as f32 + 1.),
         ),
     );
+    let text_system = cx.text_system().clone();
     window.paint_layer(line_bounds, |window| {
-        let padding_top = (line_height - layout.ascent - layout.descent) / 2.;
-        let baseline_offset = point(px(0.), padding_top + layout.ascent);
+        // Leading-trim (equivalent to CSS `text-box: trim-both cap alphabetic`): center the
+        // cap-height box in the line box rather than the full ascent+descent metric box. `ascent`
+        // includes diacritic/CJK clearance that visible glyphs never reach, so centering the metric
+        // box pushed text visibly low — worse for scripts with short ink (e.g. Latin lowercase).
+        let cap_height = layout
+            .runs
+            .first()
+            .map(|run| text_system.cap_height(run.font_id, layout.font_size))
+            .filter(|cap| *cap > px(0.))
+            // Fonts without a cap-height (some emoji/CJK faces) fall back to the previous
+            // ascent-based centering: (line_height + (ascent - descent)) / 2 == the old formula.
+            .unwrap_or(layout.ascent - layout.descent);
+        let baseline_offset = point(px(0.), (line_height + cap_height).half());
         let mut decoration_runs = decoration_runs.iter();
         let mut wraps = wrap_boundaries.iter().peekable();
         let mut run_end = 0;
         let mut color = black();
         let mut current_underline: Option<(Point<Pixels>, UnderlineStyle)> = None;
         let mut current_strikethrough: Option<(Point<Pixels>, StrikethroughStyle)> = None;
-        let text_system = cx.text_system().clone();
         let mut glyph_origin = point(
             aligned_origin_x(
                 origin,
