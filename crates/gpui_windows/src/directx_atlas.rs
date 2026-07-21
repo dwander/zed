@@ -3,8 +3,9 @@ use etagere::BucketedAtlasAllocator;
 use parking_lot::Mutex;
 use windows::Win32::Graphics::{
     Direct3D11::{
-        D3D11_BIND_SHADER_RESOURCE, D3D11_BOX, D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT,
-        ID3D11Device, ID3D11DeviceContext, ID3D11ShaderResourceView, ID3D11Texture2D,
+        D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE, D3D11_BOX,
+        D3D11_RESOURCE_MISC_GENERATE_MIPS, D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT, ID3D11Device,
+        ID3D11DeviceContext, ID3D11ShaderResourceView, ID3D11Texture2D,
     },
     Dxgi::Common::*,
 };
@@ -13,6 +14,14 @@ use gpui::{
     AtlasKey, AtlasTextureId, AtlasTextureKind, AtlasTextureList, AtlasTile, Bounds, DevicePixels,
     PlatformAtlas, Point, Size,
 };
+
+/// 이미지 타일을 공유 아틀라스에 패킹하지 않고 **전용 밉맵 텍스처**로 만드는 최소 변 길이(px).
+/// 이 크기 이상의 이미지(뷰어 fit/원본 등)는 밉 체인을 생성해, 화면에서 축소해 그릴 때 GPU
+/// 트라이리니어 샘플러가 알맞은 밉 레벨을 골라 모아레 없이 실시간으로 그린다. 썸네일
+/// (picell CACHE_SIZE=512)·글리프·아이콘은 이 아래라 기존대로 공유 아틀라스에 패킹된다
+/// (전용 텍스처 폭증·드로우콜 배치 저하 방지). 아틀라스 기본 텍스처 크기(1024)와 맞물려,
+/// 이보다 작은 타일은 항상 패킹 가능하다.
+const MIPMAP_MIN_DIMENSION: i32 = 1024;
 
 pub(crate) struct DirectXAtlas(Mutex<DirectXAtlasState>);
 
@@ -32,6 +41,9 @@ struct DirectXAtlasTexture {
     texture: ID3D11Texture2D,
     view: [Option<ID3D11ShaderResourceView>; 1],
     live_atlas_keys: u32,
+    /// 전용 밉맵 텍스처인지 — true 면 업로드 후 `GenerateMips` 를 호출하고, 다른 타일을 이 텍스처에
+    /// 패킹하지 않는다(밉맵은 아틀라스 타일 경계에서 이웃 픽셀과 번지므로 이미지 1장을 전용으로 담는다).
+    mipmapped: bool,
 }
 
 impl DirectXAtlas {
@@ -85,11 +97,19 @@ impl PlatformAtlas for DirectXAtlas {
             let Some((size, bytes)) = build()? else {
                 return Ok(None);
             };
+            // 큰 이미지는 전용 밉맵 텍스처로 — 화면에서 축소해 그릴 때 GPU 트라이리니어가 밉 레벨을
+            // 골라 모아레 없이 실시간 렌더한다. 썸네일/글리프 등 작은 타일은 기존대로 패킹된다.
+            let mipmapped = matches!(key, AtlasKey::Image(_))
+                && size.width.0.max(size.height.0) >= MIPMAP_MIN_DIMENSION;
             let tile = lock
-                .allocate(size, key.texture_kind())
+                .allocate(size, key.texture_kind(), mipmapped)
                 .ok_or_else(|| anyhow::anyhow!("failed to allocate"))?;
             let texture = lock.texture(tile.texture_id);
             texture.upload(&lock.device_context, tile.bounds, &bytes);
+            // 밉 0(원본) 업로드 후 나머지 밉 레벨을 GPU 로 채운다(전용 텍스처당 1회, 프레임당 아님).
+            if texture.mipmapped {
+                texture.generate_mips(&lock.device_context);
+            }
             lock.tiles_by_key.insert(key.clone(), tile);
             Ok(Some(tile))
         }
@@ -130,8 +150,12 @@ impl DirectXAtlasState {
         &mut self,
         size: Size<DevicePixels>,
         texture_kind: AtlasTextureKind,
+        mipmapped: bool,
     ) -> Option<AtlasTile> {
-        {
+        // 밉맵 이미지는 전용 텍스처가 필요하다(패킹하면 밉이 이웃 타일과 번짐) — 기존 텍스처에 끼워넣지
+        // 않고 곧바로 새 텍스처를 만든다. 거꾸로, 일반 타일은 밉맵 텍스처에 패킹하지 않는다(가득 채워
+        // 여유 공간이 없기도 하지만 명시적으로 걸러 밉맵 텍스처의 전용성을 보장).
+        if !mipmapped {
             let textures = match texture_kind {
                 AtlasTextureKind::Monochrome => &mut self.monochrome_textures,
                 AtlasTextureKind::Polychrome => &mut self.polychrome_textures,
@@ -141,13 +165,14 @@ impl DirectXAtlasState {
             if let Some(tile) = textures
                 .iter_mut()
                 .rev()
+                .filter(|texture| !texture.mipmapped)
                 .find_map(|texture| texture.allocate(size))
             {
                 return Some(tile);
             }
         }
 
-        let texture = self.push_texture(size, texture_kind)?;
+        let texture = self.push_texture(size, texture_kind, mipmapped)?;
         texture.allocate(size)
     }
 
@@ -155,6 +180,7 @@ impl DirectXAtlasState {
         &mut self,
         min_size: Size<DevicePixels>,
         kind: AtlasTextureKind,
+        mipmapped: bool,
     ) -> Option<&mut DirectXAtlasTexture> {
         const DEFAULT_ATLAS_SIZE: Size<DevicePixels> = Size {
             width: DevicePixels(1024),
@@ -166,7 +192,13 @@ impl DirectXAtlasState {
             width: DevicePixels(16384),
             height: DevicePixels(16384),
         };
-        let size = min_size.min(&MAX_ATLAS_SIZE).max(&DEFAULT_ATLAS_SIZE);
+        // 밉맵 전용 텍스처는 이미지 크기 그대로 만든다(패킹 여유 없이 = 다른 타일이 못 들어오게).
+        // 일반 아틀라스는 최소 기본 크기(1024)로 키워 여러 타일을 담는다.
+        let size = if mipmapped {
+            min_size.min(&MAX_ATLAS_SIZE)
+        } else {
+            min_size.min(&MAX_ATLAS_SIZE).max(&DEFAULT_ATLAS_SIZE)
+        };
         let pixel_format;
         let bind_flag;
         let bytes_per_pixel;
@@ -187,10 +219,21 @@ impl DirectXAtlasState {
                 bytes_per_pixel = 4;
             }
         }
+        // 밉맵이면 전체 밉 체인(MipLevels=0) + 렌더타깃 바인드 + GENERATE_MIPS 플래그로 만들고
+        // (`GenerateMips` 요구사항), 업로드 후 GPU 로 하위 밉을 채운다. 아니면 단일 밉(기존).
+        let (mip_levels, bind_flags, misc_flags) = if mipmapped {
+            (
+                0u32,
+                (bind_flag.0 | D3D11_BIND_RENDER_TARGET.0) as u32,
+                D3D11_RESOURCE_MISC_GENERATE_MIPS.0 as u32,
+            )
+        } else {
+            (1u32, bind_flag.0 as u32, 0u32)
+        };
         let texture_desc = D3D11_TEXTURE2D_DESC {
             Width: size.width.0 as u32,
             Height: size.height.0 as u32,
-            MipLevels: 1,
+            MipLevels: mip_levels,
             ArraySize: 1,
             Format: pixel_format,
             SampleDesc: DXGI_SAMPLE_DESC {
@@ -198,9 +241,9 @@ impl DirectXAtlasState {
                 Quality: 0,
             },
             Usage: D3D11_USAGE_DEFAULT,
-            BindFlags: bind_flag.0 as u32,
+            BindFlags: bind_flags,
             CPUAccessFlags: 0,
-            MiscFlags: 0,
+            MiscFlags: misc_flags,
         };
         let mut texture: Option<ID3D11Texture2D> = None;
         unsafe {
@@ -235,6 +278,7 @@ impl DirectXAtlasState {
             texture,
             view,
             live_atlas_keys: 0,
+            mipmapped,
         };
         if let Some(ix) = index {
             texture_list.textures[ix] = Some(atlas_texture);
@@ -316,6 +360,16 @@ impl DirectXAtlasTexture {
                 bounds.size.width.to_bytes(self.bytes_per_pixel as u8),
                 0,
             );
+        }
+    }
+
+    /// 밉 0(원본) 업로드 후 나머지 밉 레벨을 GPU 로 채운다 — 전용 밉맵 텍스처(`mipmapped`)에서만
+    /// 호출한다. 텍스처 생성 시 `RENDER_TARGET` 바인드 + `GENERATE_MIPS` 플래그가 있어야 동작한다.
+    fn generate_mips(&self, device_context: &ID3D11DeviceContext) {
+        if let Some(view) = &self.view[0] {
+            unsafe {
+                device_context.GenerateMips(view);
+            }
         }
     }
 
