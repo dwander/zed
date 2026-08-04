@@ -59,6 +59,12 @@ pub struct WindowsWindowState {
     pub callbacks: Callbacks,
     pub input_handler: Cell<Option<PlatformInputHandler>>,
     pub ime_enabled: Cell<bool>,
+    /// Last caret rectangle reported to the OS, in physical client coordinates.
+    /// Used to skip the IME/caret updates while the caret hasn't moved.
+    pub(crate) last_caret: Cell<Option<CaretRect>>,
+    /// Size and blank bitmap of the invisible system caret, while one exists.
+    /// See `WindowsWindowInner::show_system_caret`.
+    pub(crate) system_caret: Cell<Option<(CaretRect, HBITMAP)>>,
     pub pending_surrogate: Cell<Option<u16>>,
     pub last_reported_modifiers: Cell<Option<Modifiers>>,
     pub last_reported_capslock: Cell<Option<Capslock>>,
@@ -171,6 +177,8 @@ impl WindowsWindowState {
             callbacks,
             input_handler: Cell::new(input_handler),
             ime_enabled: Cell::new(true),
+            last_caret: Cell::new(None),
+            system_caret: Cell::new(None),
             pending_surrogate: Cell::new(pending_surrogate),
             last_reported_modifiers: Cell::new(last_reported_modifiers),
             last_reported_capslock: Cell::new(last_reported_capslock),
