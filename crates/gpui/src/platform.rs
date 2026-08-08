@@ -190,6 +190,15 @@ pub trait Platform: 'static {
         &self,
         options: PathPromptOptions,
     ) -> oneshot::Receiver<Result<Option<Vec<PathBuf>>>>;
+    /// Same as [`Platform::prompt_for_paths`], but the dialog starts in `directory`.
+    /// Platforms that can't set a starting location fall back to the system default one.
+    fn prompt_for_paths_in(
+        &self,
+        options: PathPromptOptions,
+        _directory: Option<PathBuf>,
+    ) -> oneshot::Receiver<Result<Option<Vec<PathBuf>>>> {
+        self.prompt_for_paths(options)
+    }
     fn prompt_for_new_path(
         &self,
         directory: &Path,

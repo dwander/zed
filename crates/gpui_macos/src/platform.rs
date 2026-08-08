@@ -772,6 +772,14 @@ impl Platform for MacPlatform {
         &self,
         options: PathPromptOptions,
     ) -> oneshot::Receiver<Result<Option<Vec<PathBuf>>>> {
+        self.prompt_for_paths_in(options, None)
+    }
+
+    fn prompt_for_paths_in(
+        &self,
+        options: PathPromptOptions,
+        directory: Option<PathBuf>,
+    ) -> oneshot::Receiver<Result<Option<Vec<PathBuf>>>> {
         let (done_tx, done_rx) = oneshot::channel();
         self.foreground_executor()
             .spawn(async move {
@@ -783,6 +791,12 @@ impl Platform for MacPlatform {
 
                     panel.setCanCreateDirectories(true.to_objc());
                     panel.setResolvesAliases_(false.to_objc());
+
+                    if let Some(directory) = directory {
+                        let path = ns_string(directory.to_string_lossy().as_ref());
+                        let url = NSURL::fileURLWithPath_isDirectory_(nil, path, true.to_objc());
+                        let _: () = msg_send![panel, setDirectoryURL: url];
+                    }
                     let done_tx = Cell::new(Some(done_tx));
                     let block = ConcreteBlock::new(move |response: NSModalResponse| {
                         let result = if response == NSModalResponse::NSModalResponseOk {

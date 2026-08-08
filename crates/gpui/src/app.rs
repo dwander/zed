@@ -1530,6 +1530,18 @@ impl App {
         self.platform.prompt_for_paths(options)
     }
 
+    /// Same as [`App::prompt_for_paths`], but the dialog starts in `directory`.
+    ///
+    /// Platforms that can't set a starting location (and paths that no longer exist) fall
+    /// back to the system default location, so this never fails on the directory alone.
+    pub fn prompt_for_paths_in(
+        &self,
+        options: PathPromptOptions,
+        directory: Option<PathBuf>,
+    ) -> oneshot::Receiver<Result<Option<Vec<PathBuf>>>> {
+        self.platform.prompt_for_paths_in(options, directory)
+    }
+
     /// Displays a platform modal for selecting a new path where a file can be saved.
     ///
     /// The provided directory will be used to set the initial location.
