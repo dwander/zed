@@ -1529,6 +1529,11 @@ impl WgpuRenderer {
                     // Surfaces are macOS-only for video playback and are not
                     // implemented by the WGPU renderer.
                     PrimitiveBatch::Surfaces(_surfaces) => {}
+                    // Filters (`filter` / `backdrop-filter`) are implemented by the DirectX and
+                    // Metal backends only. Here they draw nothing, so a blurred element renders
+                    // unblurred rather than failing — the element's own background and children
+                    // still paint normally.
+                    PrimitiveBatch::BackdropFilters(_) | PrimitiveBatch::FilterBoundary(_) => {}
                 }
             }
         }
