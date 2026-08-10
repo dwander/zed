@@ -1143,10 +1143,8 @@ pub struct Window {
     pub(crate) requested_autoscroll: Option<Bounds<Pixels>>,
     /// Whether the frame being drawn found an element under the cursor that accepts the active
     /// drag. Recomputed from scratch every draw; pushed to the platform window (which may use it
-    /// to show a "not allowed" drag cursor) whenever it changes.
+    /// to show a "not allowed" drag cursor) on every frame drawn while a drag is in flight.
     pub(crate) drop_target_hovered: bool,
-    /// Last value handed to the platform window, so unchanged frames stay silent.
-    reported_drop_target_hovered: bool,
     pub(crate) image_cache_stack: Vec<AnyImageCache>,
     pub(crate) rendered_frame: Frame,
     pub(crate) next_frame: Frame,
@@ -1914,7 +1912,6 @@ impl Window {
             element_opacity: 1.0,
             requested_autoscroll: None,
             drop_target_hovered: false,
-            reported_drop_target_hovered: false,
             rendered_frame: Frame::new(DispatchTree::new(cx.keymap.clone(), cx.actions.clone())),
             next_frame: Frame::new(DispatchTree::new(cx.keymap.clone(), cx.actions.clone())),
             next_frame_callbacks,
@@ -2933,9 +2930,10 @@ impl Window {
         self.next_frame.window_active = self.active.get();
 
         // Tell the platform whether this frame had a drop target under the cursor, so an OS drag
-        // hovering us can show "not allowed" where nothing would accept it.
-        if self.drop_target_hovered != self.reported_drop_target_hovered {
-            self.reported_drop_target_hovered = self.drop_target_hovered;
+        // hovering us can show "not allowed" where nothing would accept it. Reported every frame a
+        // drag is in flight rather than only on change: silence is what tells the platform no frame
+        // has been drawn since the drag arrived, which is not the same as a refusal.
+        if cx.active_drag.is_some() {
             self.platform_window
                 .set_drop_target_hovered(self.drop_target_hovered);
         }

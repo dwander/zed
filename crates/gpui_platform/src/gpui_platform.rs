@@ -53,6 +53,18 @@ pub fn web_init() {
     gpui_web::init_logging();
 }
 
+/// Sets what a modifier-free drop means to this app — `true` = move, `false` = copy (the default).
+/// Only affects the badge drawn on the drag cursor while an OS drag hovers one of our windows, so
+/// that the feedback matches what the app will actually do with the drop; the app still decides the
+/// operation itself. No-op on platforms whose drag cursor isn't driven by a drop effect.
+#[cfg(target_os = "windows")]
+pub fn set_drag_move_is_default(is_move: bool) {
+    gpui_windows::set_drag_move_is_default(is_move);
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn set_drag_move_is_default(_is_move: bool) {}
+
 /// Returns the default [`Platform`] for the current OS.
 pub fn current_platform(headless: bool) -> Rc<dyn Platform> {
     #[cfg(target_os = "macos")]
