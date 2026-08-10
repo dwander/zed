@@ -2787,12 +2787,27 @@ impl Interactivity {
         let can_drop_predicate = mem::take(&mut self.can_drop_predicate);
 
         if !drop_listeners.is_empty() {
+            // Under the cursor and able to take what's being dragged? Latch it on the window so the
+            // platform can show the drag as accepted here (and as refused everywhere else).
+            if let Some(drag) = cx.active_drag.take() {
+                let drag_type = drag.value.as_ref().type_id();
+                let accepts = drop_listeners.iter().any(|(ty, _)| *ty == drag_type)
+                    && hitbox.is_hovered_ignoring_last_input(window)
+                    && can_drop_predicate
+                        .as_ref()
+                        .is_none_or(|predicate| predicate(drag.value.as_ref(), window, cx));
+                if accepts {
+                    window.mark_drop_target_hovered();
+                }
+                cx.active_drag = Some(drag);
+            }
+
             let hitbox = hitbox.clone();
             window.on_mouse_event({
                 move |_: &MouseUpEvent, phase, window, cx| {
                     if let Some(drag) = &cx.active_drag
                         && phase == DispatchPhase::Bubble
-                        && hitbox.is_hovered(window)
+                        && hitbox.is_hovered_ignoring_last_input(window)
                     {
                         let drag_state_type = drag.value.as_ref().type_id();
                         for (drop_state_type, listener) in &drop_listeners {
@@ -3364,14 +3379,15 @@ impl Interactivity {
                         if let Some(group_hitbox_id) =
                             GroupHitboxes::get(&group_drag_style.group, cx)
                             && *state_type == drag.value.as_ref().type_id()
-                            && group_hitbox_id.is_hovered(window)
+                            && group_hitbox_id.is_hovered_ignoring_last_input(window)
                         {
                             style.refine(&group_drag_style.style);
                         }
                     }
 
                     for (state_type, build_drag_over_style) in &self.drag_over_styles {
-                        if *state_type == drag.value.as_ref().type_id() && hitbox.is_hovered(window)
+                        if *state_type == drag.value.as_ref().type_id()
+                            && hitbox.is_hovered_ignoring_last_input(window)
                         {
                             style.refine(&build_drag_over_style(drag.value.as_ref(), window, cx));
                         }

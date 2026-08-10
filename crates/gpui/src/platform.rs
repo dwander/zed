@@ -926,6 +926,14 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
         WindowControls::default()
     }
     fn set_client_inset(&self, _inset: Pixels) {}
+
+    /// Reports whether the element under the cursor accepts the drag currently hovering this
+    /// window, refreshed once per drawn frame while a drag is in flight. Platforms whose OS
+    /// drag protocol asks the window for a drop effect (Windows OLE) use it to show a
+    /// "not allowed" cursor over areas that registered no drop handler, instead of promising a
+    /// copy that would silently do nothing. No-op elsewhere.
+    fn set_drop_target_hovered(&self, _hovered: bool) {}
+
     fn gpu_specs(&self) -> Option<GpuSpecs>;
 
     fn update_ime_position(&self, _bounds: Bounds<Pixels>);

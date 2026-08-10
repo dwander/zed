@@ -53,21 +53,6 @@ pub fn web_init() {
     gpui_web::init_logging();
 }
 
-/// Marks whether an in-app-initiated OLE drag-out (e.g. a file/folder panel dragging its own
-/// items) is currently in flight, distinct from an external source (Explorer etc.) dragging
-/// into our window. On Windows this lets the platform's drop-target handler reflect Shift as
-/// a "move" drop effect for in-app drags while still always reporting "copy" to external
-/// sources — flipping the effect for an external source would make it believe *it* completed
-/// the move and delete the origin, racing the host app's own move handling. No-op on platforms
-/// without this ambiguity.
-#[cfg(target_os = "windows")]
-pub fn set_internal_drag_active(active: bool) {
-    gpui_windows::set_internal_drag_active(active);
-}
-
-#[cfg(not(target_os = "windows"))]
-pub fn set_internal_drag_active(_active: bool) {}
-
 /// Returns the default [`Platform`] for the current OS.
 pub fn current_platform(headless: bool) -> Rc<dyn Platform> {
     #[cfg(target_os = "macos")]

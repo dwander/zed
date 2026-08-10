@@ -826,6 +826,16 @@ impl Hitbox {
         self.id.is_hovered(window)
     }
 
+    /// Like [`Hitbox::is_hovered`], but ignoring the input modality. Use it for pointer-driven
+    /// interactions that must keep working while the keyboard is what last drove the UI — a cursor
+    /// shape, or a drag in flight. An OS-driven drag is the sharp case: it takes the pointer
+    /// captive and sends us no mouse events of its own, so if the last thing the user did in this
+    /// window was press a key, `is_hovered` would report nothing as hovered for the whole drag and
+    /// every drop target would go dead.
+    pub(crate) fn is_hovered_ignoring_last_input(&self, window: &Window) -> bool {
+        self.id.is_hovered_ignoring_last_input(window)
+    }
+
     /// Checks if the hitbox contains the mouse and should handle scroll events. Typically this
     /// should only be used when handling `ScrollWheelEvent`, and otherwise `is_hovered` should be
     /// used. See the documentation of `Hitbox::is_hovered` for details about this distinction.
@@ -1131,6 +1141,12 @@ pub struct Window {
     pub(crate) element_opacity: f32,
     pub(crate) content_mask_stack: Vec<ContentMask<Pixels>>,
     pub(crate) requested_autoscroll: Option<Bounds<Pixels>>,
+    /// Whether the frame being drawn found an element under the cursor that accepts the active
+    /// drag. Recomputed from scratch every draw; pushed to the platform window (which may use it
+    /// to show a "not allowed" drag cursor) whenever it changes.
+    pub(crate) drop_target_hovered: bool,
+    /// Last value handed to the platform window, so unchanged frames stay silent.
+    reported_drop_target_hovered: bool,
     pub(crate) image_cache_stack: Vec<AnyImageCache>,
     pub(crate) rendered_frame: Frame,
     pub(crate) next_frame: Frame,
@@ -1897,6 +1913,8 @@ impl Window {
             content_mask_stack: Vec::new(),
             element_opacity: 1.0,
             requested_autoscroll: None,
+            drop_target_hovered: false,
+            reported_drop_target_hovered: false,
             rendered_frame: Frame::new(DispatchTree::new(cx.keymap.clone(), cx.actions.clone())),
             next_frame: Frame::new(DispatchTree::new(cx.keymap.clone(), cx.actions.clone())),
             next_frame_callbacks,
@@ -2888,6 +2906,8 @@ impl Window {
         debug_assert!(self.rendered_entity_stack.is_empty());
         self.invalidator.set_dirty(false);
         self.requested_autoscroll = None;
+        // Rebuilt by the drop-capable elements painted below (see `Window::mark_drop_target_hovered`).
+        self.drop_target_hovered = false;
 
         // Restore the previously-used input handler.
         // Place it back into a None slot (left by a previous .take()) so that
@@ -2911,6 +2931,14 @@ impl Window {
         }
         self.dirty_views.clear();
         self.next_frame.window_active = self.active.get();
+
+        // Tell the platform whether this frame had a drop target under the cursor, so an OS drag
+        // hovering us can show "not allowed" where nothing would accept it.
+        if self.drop_target_hovered != self.reported_drop_target_hovered {
+            self.reported_drop_target_hovered = self.drop_target_hovered;
+            self.platform_window
+                .set_drop_target_hovered(self.drop_target_hovered);
+        }
 
         // Register requested input handler with the platform window.
         // Use .take() instead of .pop() to preserve Vec length, so that cached
@@ -3612,6 +3640,13 @@ impl Window {
             self.text_system.truncate_layouts(index.line_layout_index);
         }
         result
+    }
+
+    /// Records that the element being painted sits under the cursor and accepts the active drag.
+    /// Latched for the rest of the frame and reported to the platform window at the end of
+    /// [`Window::draw`] — see [`PlatformWindow::set_drop_target_hovered`].
+    pub(crate) fn mark_drop_target_hovered(&mut self) {
+        self.drop_target_hovered = true;
     }
 
     /// When you call this method during [`Element::prepaint`], containing elements will attempt to
