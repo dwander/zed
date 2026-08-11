@@ -23,6 +23,25 @@ fn max_blur_radius(filters: &[ScaledFilter]) -> f32 {
         ScaledFilter::Blur(radius) => acc.max(radius.0),
     })
 }
+
+/// Grow (or shrink) `bounds` about `anchor` by `factor`.
+fn scale_about(
+    bounds: Bounds<ScaledPixels>,
+    factor: f32,
+    anchor: Point<ScaledPixels>,
+) -> Bounds<ScaledPixels> {
+    Bounds {
+        origin: Point {
+            x: ScaledPixels(anchor.x.0 + (bounds.origin.x.0 - anchor.x.0) * factor),
+            y: ScaledPixels(anchor.y.0 + (bounds.origin.y.0 - anchor.y.0) * factor),
+        },
+        size: Size {
+            width: ScaledPixels(bounds.size.width.0 * factor),
+            height: ScaledPixels(bounds.size.height.0 * factor),
+        },
+    }
+}
+
 #[cfg(any(test, feature = "test-support"))]
 use image::RgbaImage;
 
@@ -197,6 +216,14 @@ struct BlurUniform {
     /// Spacing between taps in pixels (gaussian passes only); >1 lets `tap_count` taps span very
     /// large radii without truncating the gaussian, matching the wgpu backend.
     tap_step: f32,
+    /// Composite pass only: resample the source about `scale_anchor` by this factor (1.0 = 1:1).
+    /// Drives `Styled::appear_scale`.
+    scale: f32,
+    /// Composite pass only: how many source texels one screen pixel spans — 2.0 for the half-res
+    /// blur textures, 1.0 when compositing a full-resolution (unblurred) group.
+    source_texel_scale: f32,
+    /// Composite pass only: the point `scale` scales about, in scene pixels.
+    scale_anchor: [f32; 2],
 }
 
 impl Default for BlurUniform {
@@ -212,6 +239,9 @@ impl Default for BlurUniform {
             clip_rounded: 0.0,
             downsample: 0.0,
             tap_step: 0.0,
+            scale: 1.0,
+            source_texel_scale: 2.0,
+            scale_anchor: [0.0; 2],
         }
     }
 }
@@ -912,6 +942,8 @@ impl MetalRenderer {
                                 filter.corner_radii,
                                 max_blur_radius(&filter.filters),
                                 filter.opacity,
+                                1.0,
+                                Point::default(),
                                 true,
                             );
                         }
@@ -970,6 +1002,8 @@ impl MetalRenderer {
                                     boundary.corner_radii,
                                     max_blur_radius(&boundary.filters),
                                     boundary.opacity,
+                                    boundary.scale,
+                                    boundary.scale_anchor,
                                     false,
                                 );
                             }
@@ -1068,8 +1102,9 @@ impl MetalRenderer {
     }
 
     /// Blur `source` (full-resolution) using the half-res ping/pong textures and composite the
-    /// result into `target`, clipped to `bounds`/`corner_radii`/`content_mask` and modulated by
-    /// `opacity`. Shared by the backdrop and content-filter paths.
+    /// result into `target`, clipped to `bounds`/`corner_radii`/`content_mask`, resampled by
+    /// `scale` about `scale_anchor`, and modulated by `opacity`. Shared by the backdrop and
+    /// content-filter paths.
     #[allow(clippy::too_many_arguments)]
     fn metal_blur_and_composite(
         &self,
@@ -1084,12 +1119,18 @@ impl MetalRenderer {
         corner_radii: Corners<ScaledPixels>,
         blur_radius: f32,
         opacity: f32,
+        scale: f32,
+        scale_anchor: Point<ScaledPixels>,
         // Backdrop clips to the rounded rect; content (`filter`) bleeds past its bounds.
         clip_rounded: bool,
     ) {
         // Sigma is halved because the blur runs at half resolution.
         let sigma = (blur_radius * 0.5).max(0.0);
-        if sigma <= 0.0 {
+        // A group can be isolated to be scaled rather than blurred; then there is nothing to blur
+        // and the composite samples the full-resolution source directly (a half-res round trip
+        // would soften it for no reason).
+        let blurred = sigma > 0.0;
+        if !blurred && scale == 1.0 {
             return;
         }
         // Span ±3σ. If that needs more than 32 taps, spread the taps apart (tap_step > 1) rather
@@ -1097,11 +1138,18 @@ impl MetalRenderer {
         let ideal_taps = (3.0 * sigma).ceil();
         let tap_count = ideal_taps.clamp(1.0, 32.0);
         let tap_step = (ideal_taps / tap_count).max(1.0);
-        // Content blur bleeds ~3·radius past the box, so its composite quad covers a dilated rect.
+        // Content blur bleeds ~3·radius past the box, so its composite quad covers a dilated rect;
+        // a group scaled up past 1 likewise reaches past its bounds. Both grow the quad only —
+        // the shape still comes from the sampled alpha.
         let composite_bounds = if clip_rounded {
             bounds
         } else {
-            bounds.dilate(ScaledPixels(3.0 * blur_radius))
+            let bleed = bounds.dilate(ScaledPixels(3.0 * blur_radius));
+            if scale > 1.0 {
+                scale_about(bleed, scale, scale_anchor)
+            } else {
+                bleed
+            }
         };
         let half = Size {
             width: DevicePixels((i32::from(viewport_size.width) / 2).max(1)),
@@ -1111,55 +1159,58 @@ impl MetalRenderer {
         let half_h = i32::from(half.height) as f32;
 
         // Downsample source -> ping, then separable gaussian ping -> pong -> ping.
-        self.run_metal_blur_pass(
-            command_buffer,
-            &self.blur_downsample_pipeline_state,
-            ping,
-            source,
-            half,
-            BlurUniform {
-                downsample: 1.0,
-                ..Default::default()
-            },
-            false,
-        );
-        self.run_metal_blur_pass(
-            command_buffer,
-            &self.blur_pipeline_state,
-            pong,
-            ping,
-            half,
-            BlurUniform {
-                direction: [1.0 / half_w, 0.0],
-                sigma,
-                tap_count,
-                tap_step,
-                ..Default::default()
-            },
-            false,
-        );
-        self.run_metal_blur_pass(
-            command_buffer,
-            &self.blur_pipeline_state,
-            ping,
-            pong,
-            half,
-            BlurUniform {
-                direction: [0.0, 1.0 / half_h],
-                sigma,
-                tap_count,
-                tap_step,
-                ..Default::default()
-            },
-            false,
-        );
+        if blurred {
+            self.run_metal_blur_pass(
+                command_buffer,
+                &self.blur_downsample_pipeline_state,
+                ping,
+                source,
+                half,
+                BlurUniform {
+                    downsample: 1.0,
+                    ..Default::default()
+                },
+                false,
+            );
+            self.run_metal_blur_pass(
+                command_buffer,
+                &self.blur_pipeline_state,
+                pong,
+                ping,
+                half,
+                BlurUniform {
+                    direction: [1.0 / half_w, 0.0],
+                    sigma,
+                    tap_count,
+                    tap_step,
+                    ..Default::default()
+                },
+                false,
+            );
+            self.run_metal_blur_pass(
+                command_buffer,
+                &self.blur_pipeline_state,
+                ping,
+                pong,
+                half,
+                BlurUniform {
+                    direction: [0.0, 1.0 / half_h],
+                    sigma,
+                    tap_count,
+                    tap_step,
+                    ..Default::default()
+                },
+                false,
+            );
+        }
 
-        // Composite the blurred result into the target (preserving its contents).
+        // Composite the (blurred) result into the target, preserving its contents. The blurred
+        // result lives in the half-res ping texture; an unblurred group is sampled at full res.
         self.run_metal_blur_pass(
             command_buffer,
             &self.blur_composite_pipeline_state,
             target,
-            ping,
+            if blurred { ping } else { source },
             viewport_size,
             BlurUniform {
                 bounds: composite_bounds,
@@ -1167,6 +1218,9 @@ impl MetalRenderer {
                 corner_radii,
                 opacity,
                 clip_rounded: if clip_rounded { 1.0 } else { 0.0 },
+                scale,
+                source_texel_scale: if blurred { 2.0 } else { 1.0 },
+                scale_anchor: [scale_anchor.x.0, scale_anchor.y.0],
                 ..Default::default()
             },
             true,

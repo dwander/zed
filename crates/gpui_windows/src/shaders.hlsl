@@ -1305,6 +1305,14 @@ cbuffer BlurParams: register(b2) {
     // Spacing between taps in pixels (gaussian passes only); >1 lets `blur_tap_count` taps span
     // very large radii without truncating the gaussian.
     float blur_tap_step;
+    // Composite pass only: resample the source about `blur_scale_anchor` by this factor
+    // (1.0 = 1:1). This is how `Styled::appear_scale` scales an isolated group.
+    float blur_scale;
+    // Composite pass only: how many source texels one screen pixel spans — 2.0 for the half-res
+    // blur textures, 1.0 when compositing a full-resolution (unblurred) group.
+    float blur_source_texel_scale;
+    // Composite pass only: the point `blur_scale` scales about, in scene pixels.
+    float2 blur_scale_anchor;
 };
 
 struct BlurVertexOutput {
@@ -1376,12 +1384,17 @@ BlurCompositeVertexOutput blur_composite_vertex(uint vertex_id: SV_VertexID) {
 }
 
 float4 blur_composite_fragment(BlurCompositeFragmentInput input): SV_Target {
+    // Scaling a group is a source-side coordinate change: the pixel at `p` shows the point the
+    // unscaled group had at `anchor + (p - anchor) / scale`.
+    float2 source_position =
+        blur_scale_anchor + (input.position.xy - blur_scale_anchor) / blur_scale;
     // Sample the half-res blur by screen position, on the SAME fixed 2:1 grid the snapped downsample
     // wrote (anchored at the origin, independent of viewport parity): 2 * the half-res texture size
     // maps screen pixel p to half-res texel p/2 at every window size, so it doesn't wobble on resize.
-    uint hw, hh;
-    t_sprite.GetDimensions(hw, hh);
-    float2 uv = input.position.xy / (2.0 * float2(hw, hh));
+    // An unblurred group is full-resolution instead, hence the texel scale rather than a literal 2.
+    uint sw, sh;
+    t_sprite.GetDimensions(sw, sh);
+    float2 uv = source_position / (blur_source_texel_scale * float2(sw, sh));
     float4 blurred = t_sprite.SampleLevel(s_sprite, uv, 0.0);
     Corners radii;
     radii.top_left = blur_corner_radii.x;

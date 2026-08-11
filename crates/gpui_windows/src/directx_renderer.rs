@@ -532,6 +532,8 @@ impl DirectXRenderer {
                                 corner_radii_array(filter.corner_radii),
                                 max_blur_radius(&filter.filters),
                                 filter.opacity,
+                                1.0,
+                                Point::default(),
                                 true,
                             )?;
                         }
@@ -576,6 +578,8 @@ impl DirectXRenderer {
                                 corner_radii_array(boundary.corner_radii),
                                 max_blur_radius(&boundary.filters),
                                 boundary.opacity,
+                                boundary.scale,
+                                boundary.scale_anchor,
                                 false,
                             )
                         } else {
@@ -1006,8 +1010,9 @@ impl DirectXRenderer {
     }
 
     /// Blur `source_srv` (full-resolution) using the half-res ping/pong textures and composite the
-    /// result into `target_rtv`, clipped to `bounds`/`corner_radii`/`content_mask` and modulated
-    /// by `opacity`. Shared by the backdrop and content-filter paths.
+    /// result into `target_rtv`, clipped to `bounds`/`corner_radii`/`content_mask`, resampled by
+    /// `scale` about `scale_anchor`, and modulated by `opacity`. Shared by the backdrop and
+    /// content-filter paths.
     #[allow(clippy::too_many_arguments)]
     fn dx_blur_and_composite(
         &self,
@@ -1018,12 +1023,18 @@ impl DirectXRenderer {
         corner_radii: [f32; 4],
         blur_radius: f32,
         opacity: f32,
+        scale: f32,
+        scale_anchor: Point<ScaledPixels>,
         // Backdrop clips to the rounded rect; content (`filter`) bleeds past its bounds.
         clip_rounded: bool,
     ) -> Result<()> {
         // Sigma is halved because the blur runs at half resolution.
         let sigma = (blur_radius * 0.5).max(0.0);
-        if sigma <= 0.0 {
+        // A group can be isolated to be scaled rather than blurred; then there is nothing to blur
+        // and the composite samples the full-resolution source directly (a half-res round trip
+        // would soften it for no reason).
+        let blurred = sigma > 0.0;
+        if !blurred && scale == 1.0 {
             return Ok(());
         }
         // Span ±3σ. If that needs more than 32 taps, spread the taps apart (tap_step > 1) rather
@@ -1031,11 +1042,18 @@ impl DirectXRenderer {
         let ideal_taps = (3.0 * sigma).ceil();
         let tap_count = ideal_taps.clamp(1.0, 32.0);
         let tap_step = (ideal_taps / tap_count).max(1.0);
-        // Content blur bleeds ~3·radius past the box, so its composite quad covers a dilated rect.
+        // Content blur bleeds ~3·radius past the box, so its composite quad covers a dilated rect;
+        // a group scaled up past 1 likewise reaches past its bounds. Both grow the quad only —
+        // the shape still comes from the sampled alpha.
         let composite_bounds = if clip_rounded {
             bounds
         } else {
-            bounds.dilate(ScaledPixels(3.0 * blur_radius))
+            let bleed = bounds.dilate(ScaledPixels(3.0 * blur_radius));
+            if scale > 1.0 {
+                scale_about(bleed, scale, scale_anchor)
+            } else {
+                bleed
+            }
         };
         let half_w = (self.width / 2).max(1);
         let half_h = (self.height / 2).max(1);
@@ -1059,70 +1077,76 @@ impl DirectXRenderer {
         };
 
         // Downsample source -> ping, then separable gaussian ping -> pong -> ping.
-        self.dx_blur_pass(
-            &self.pipelines.blur_downsample_vertex,
-            &self.pipelines.blur_downsample_fragment,
-            &self.pipelines.blur_blend_replace,
-            &ping_rtv,
-            source_srv,
-            BlurParams {
-                downsample: 1.0,
-                ..Default::default()
-            },
-            &half_vp,
-            D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST,
-            3,
-            true,
-        )?;
-        self.dx_blur_pass(
-            &self.pipelines.blur_vertex,
-            &self.pipelines.blur_fragment,
-            &self.pipelines.blur_blend_replace,
-            &pong_rtv,
-            &ping_srv,
-            BlurParams {
-                direction: [1.0 / half_w as f32, 0.0],
-                sigma,
-                tap_count,
-                tap_step,
-                ..Default::default()
-            },
-            &half_vp,
-            D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST,
-            3,
-            true,
-        )?;
-        self.dx_blur_pass(
-            &self.pipelines.blur_vertex,
-            &self.pipelines.blur_fragment,
-            &self.pipelines.blur_blend_replace,
-            &ping_rtv,
-            &pong_srv,
-            BlurParams {
-                direction: [0.0, 1.0 / half_h as f32],
-                sigma,
-                tap_count,
-                tap_step,
-                ..Default::default()
-            },
-            &half_vp,
-            D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST,
-            3,
-            true,
-        )?;
-        // Composite the blurred result into the target (preserving its contents).
+        if blurred {
+            self.dx_blur_pass(
+                &self.pipelines.blur_downsample_vertex,
+                &self.pipelines.blur_downsample_fragment,
+                &self.pipelines.blur_blend_replace,
+                &ping_rtv,
+                source_srv,
+                BlurParams {
+                    downsample: 1.0,
+                    ..Default::default()
+                },
+                &half_vp,
+                D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST,
+                3,
+                true,
+            )?;
+            self.dx_blur_pass(
+                &self.pipelines.blur_vertex,
+                &self.pipelines.blur_fragment,
+                &self.pipelines.blur_blend_replace,
+                &pong_rtv,
+                &ping_srv,
+                BlurParams {
+                    direction: [1.0 / half_w as f32, 0.0],
+                    sigma,
+                    tap_count,
+                    tap_step,
+                    ..Default::default()
+                },
+                &half_vp,
+                D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST,
+                3,
+                true,
+            )?;
+            self.dx_blur_pass(
+                &self.pipelines.blur_vertex,
+                &self.pipelines.blur_fragment,
+                &self.pipelines.blur_blend_replace,
+                &ping_rtv,
+                &pong_srv,
+                BlurParams {
+                    direction: [0.0, 1.0 / half_h as f32],
+                    sigma,
+                    tap_count,
+                    tap_step,
+                    ..Default::default()
+                },
+                &half_vp,
+                D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST,
+                3,
+                true,
+            )?;
+        }
+        // Composite the (blurred) result into the target, preserving its contents. The blurred
+        // result lives in the half-res ping texture; an unblurred group is sampled at full res.
         self.dx_blur_pass(
             &self.pipelines.blur_composite_vertex,
             &self.pipelines.blur_composite_fragment,
             &self.pipelines.blur_blend_composite,
             target_rtv,
-            &ping_srv,
+            if blurred { &ping_srv } else { source_srv },
             BlurParams {
                 bounds: composite_bounds,
                 content_mask,
                 corner_radii,
                 opacity,
                 clip_rounded: if clip_rounded { 1.0 } else { 0.0 },
+                scale,
+                source_texel_scale: if blurred { 2.0 } else { 1.0 },
+                scale_anchor: [scale_anchor.x.0, scale_anchor.y.0],
                 ..Default::default()
             },
             &full_vp,
@@ -1466,7 +1490,7 @@ struct BatchParams {
 
 const _: () = assert!(std::mem::size_of::<BatchParams>() == 16);
 
-/// Mirrors the `BlurParams` cbuffer (register b1) in `shaders.hlsl`. 80 bytes (a multiple of 16,
+/// Mirrors the `BlurParams` cbuffer (register b1) in `shaders.hlsl`. 96 bytes (a multiple of 16,
 /// as constant buffers require). Updated per blur pass via `update_buffer`.
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -1488,7 +1512,18 @@ struct BlurParams {
     /// Spacing between taps in pixels (gaussian passes only); >1 lets `tap_count` taps span very
     /// large radii without truncating the gaussian, matching the wgpu backend.
     tap_step: f32,
+    /// Composite pass only: resample the source about `scale_anchor` by this factor (1.0 = 1:1).
+    /// Drives `Styled::appear_scale`.
+    scale: f32,
+    /// Composite pass only: how many source texels one screen pixel spans — 2.0 for the half-res
+    /// blur textures, 1.0 when compositing a full-resolution (unblurred) group.
+    source_texel_scale: f32,
+    /// Composite pass only: the point `scale` scales about, in scene pixels. Rounds the struct
+    /// out to a multiple of 16 bytes, as constant buffers require.
+    scale_anchor: [f32; 2],
 }
+
+const _: () = assert!(std::mem::size_of::<BlurParams>() == 96);
 
 impl Default for BlurParams {
     fn default() -> Self {
@@ -1503,7 +1538,28 @@ impl Default for BlurParams {
             clip_rounded: 0.0,
             downsample: 0.0,
             tap_step: 0.0,
+            scale: 1.0,
+            source_texel_scale: 2.0,
+            scale_anchor: [0.0; 2],
         }
+    }
+}
+
+/// Grow (or shrink) `bounds` about `anchor` by `factor`.
+fn scale_about(
+    bounds: Bounds<ScaledPixels>,
+    factor: f32,
+    anchor: Point<ScaledPixels>,
+) -> Bounds<ScaledPixels> {
+    Bounds {
+        origin: Point {
+            x: ScaledPixels(anchor.x.0 + (bounds.origin.x.0 - anchor.x.0) * factor),
+            y: ScaledPixels(anchor.y.0 + (bounds.origin.y.0 - anchor.y.0) * factor),
+        },
+        size: Size {
+            width: ScaledPixels(bounds.size.width.0 * factor),
+            height: ScaledPixels(bounds.size.height.0 * factor),
+        },
     }
 }
 

@@ -297,6 +297,15 @@ pub struct Style {
     /// Filters applied to the content rendered behind this element (CSS `backdrop-filter`).
     pub backdrop_filter: Vec<Filter>,
 
+    /// A scale applied to this element and its children, for entrance/exit animations
+    /// (CSS `transform: scale()`). See [`crate::Styled::appear_scale`] for the semantics
+    /// and the caveats.
+    pub appear_scale: Option<f32>,
+
+    /// The point [`Self::appear_scale`] scales about, as a fraction of the element's size —
+    /// CSS `transform-origin`. Defaults to the center, `(0.5, 0.5)`.
+    pub appear_scale_origin: Option<Point<f32>>,
+
     /// The text style of this element
     #[refineable]
     pub text: TextStyleRefinement,
@@ -758,12 +767,60 @@ impl Style {
             .to_pixels(rem_size)
             .clamp_radii_for_quad_size(bounds.size);
 
-        window.paint_drop_shadows(bounds, corner_radii, &self.box_shadow);
+        // `appear_scale` scales the element about `appear_scale_origin`. The box itself
+        // (background, children, border) is scaled by the renderer as a rasterized group — see
+        // `with_filter_layer` — but the drop shadow and the backdrop filter are painted *outside*
+        // that group, so their geometry is scaled here instead. Doing it geometrically is both
+        // exact and necessary: otherwise the shadow and the frosted halo would stay at full size
+        // and visibly detach from a shrunken box.
+        let scale = self.appear_scale.unwrap_or(1.);
+        let origin_fraction = self.appear_scale_origin.unwrap_or_else(|| point(0.5, 0.5));
+        let scale_anchor = bounds.origin
+            + point(
+                bounds.size.width * origin_fraction.x,
+                bounds.size.height * origin_fraction.y,
+            );
+        // Left bit-identical at 1.0: re-deriving the origin from the anchor would round it.
+        let scaled = |bounds: Bounds<Pixels>| {
+            if scale == 1. {
+                bounds
+            } else {
+                Bounds {
+                    origin: scale_anchor + (bounds.origin - scale_anchor).map(|d| d * scale),
+                    size: bounds.size.map(|length| length * scale),
+                }
+            }
+        };
+
+        if scale == 1. {
+            window.paint_drop_shadows(bounds, corner_radii, &self.box_shadow);
+        } else {
+            let shadows = self
+                .box_shadow
+                .iter()
+                .map(|shadow| BoxShadow {
+                    color: shadow.color,
+                    offset: shadow.offset.map(|length| length * scale),
+                    blur_radius: shadow.blur_radius * scale,
+                    spread_radius: shadow.spread_radius * scale,
+                    inset: shadow.inset,
+                })
+                .collect::<Vec<_>>();
+            window.paint_drop_shadows(
+                scaled(bounds),
+                corner_radii.map(|radius| *radius * scale),
+                &shadows,
+            );
+        }
 
         // Blur the content behind this element before its (typically translucent) background
         // is painted on top, so the background tints the frosted backdrop (CSS `backdrop-filter`).
         if !self.backdrop_filter.is_empty() {
-            window.paint_backdrop_filter(bounds, corner_radii, &self.backdrop_filter);
+            window.paint_backdrop_filter(
+                scaled(bounds),
+                corner_radii.map(|radius| *radius * scale),
+                &self.backdrop_filter,
+            );
         }
 
         // The element's own box — background, inset shadows, children, and border — painted as a
@@ -816,12 +873,17 @@ impl Style {
             }
         };
 
-        if self.filter.is_empty() {
+        if self.filter.is_empty() && scale == 1. {
             paint_box(window, cx);
         } else {
-            window.with_filter_layer(bounds, corner_radii, &self.filter, |window| {
-                paint_box(window, cx);
-            });
+            window.with_filter_layer(
+                bounds,
+                corner_radii,
+                &self.filter,
+                scale,
+                scale_anchor,
+                |window| paint_box(window, cx),
+            );
         }
 
         #[cfg(debug_assertions)]
@@ -877,6 +939,8 @@ impl Default for Style {
             box_shadow: Default::default(),
             filter: Default::default(),
             backdrop_filter: Default::default(),
+            appear_scale: None,
+            appear_scale_origin: None,
             text: TextStyleRefinement::default(),
             mouse_cursor: None,
             opacity: None,

@@ -1304,6 +1304,15 @@ struct BlurParams {
   // Spacing between taps in pixels (gaussian passes only); >1 lets `tap_count` taps span very
   // large radii without truncating the gaussian.
   float tap_step;
+  // Composite pass only: resample the source about `scale_anchor` by this factor (1.0 = 1:1).
+  // This is how `Styled::appear_scale` scales an isolated group.
+  float scale;
+  // Composite pass only: how many source texels one screen pixel spans — 2.0 for the half-res
+  // blur textures, 1.0 when compositing a full-resolution (unblurred) group.
+  float source_texel_scale;
+  // Composite pass only: the point `scale` scales about, in scene pixels. Lands at an 8-byte
+  // aligned offset, so it matches the Rust `[f32; 2]` with no padding inserted.
+  float2 scale_anchor;
 };
 
 struct BlurVertexOutput {
@@ -1390,11 +1399,16 @@ fragment float4 blur_composite_fragment(
     constant BlurParams &params [[buffer(1)]],
     constant Size_DevicePixels *viewport_size [[buffer(2)]]) {
   constexpr sampler s(mag_filter::linear, min_filter::linear);
+  // Scaling a group is a source-side coordinate change: the pixel at `p` shows the point the
+  // unscaled group had at `anchor + (p - anchor) / scale`.
+  float2 source_position =
+      params.scale_anchor + (input.position.xy - params.scale_anchor) / params.scale;
   // Sample the half-res blur by screen position, on the SAME fixed 2:1 grid the snapped downsample
   // wrote (anchored at the origin, independent of viewport parity): 2 * the half-res texture size
   // maps screen pixel p to half-res texel p/2 at every window size, so it doesn't wobble on resize.
-  float2 half_size = float2(float(source.get_width()), float(source.get_height()));
-  float2 uv = input.position.xy / (2.0 * half_size);
+  // An unblurred group is full-resolution instead, hence the texel scale rather than a literal 2.
+  float2 source_size = float2(float(source.get_width()), float(source.get_height()));
+  float2 uv = source_position / (params.source_texel_scale * source_size);
   float4 blurred = source.sample(s, uv);
   // Backdrop clips to the rounded rect (the panel has a defined shape); content blur bleeds past
   // its bounds like CSS `filter: blur`, so its shape comes from the blurred group's own alpha.

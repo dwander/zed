@@ -757,6 +757,13 @@ pub struct FilterBoundary {
     /// Inline capacity 4 (same struct size as 1 here — see [`BackdropFilter::filters`]).
     pub filters: SmallVec<[ScaledFilter; 4]>,
     pub opacity: f32,
+    /// Scale applied to the isolated group when it is composited back — a raster scale, like a
+    /// CSS transform (see [`crate::Styled::appear_scale`]). `1.0` composites 1:1. A boundary is
+    /// emitted when this is not `1.0` even with no `filters`.
+    pub scale: f32,
+    /// The point `scale` scales about, in scene (device-pixel) space — CSS `transform-origin`,
+    /// resolved against the element's bounds at paint time.
+    pub scale_anchor: Point<ScaledPixels>,
     /// `true` for the start marker (opens the group), `false` for the end marker (closes it).
     pub is_start: bool,
 }
@@ -1194,6 +1201,8 @@ mod tests {
             corner_radii: Corners::default(),
             filters: smallvec::smallvec![ScaledFilter::Blur(sp(8.0))],
             opacity: 1.0,
+            scale: 1.0,
+            scale_anchor: Point::default(),
             is_start,
         }
     }
