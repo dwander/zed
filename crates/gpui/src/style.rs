@@ -792,6 +792,24 @@ impl Style {
             }
         };
 
+        // Blur the content behind this element before its (typically translucent) background
+        // is painted on top, so the background tints the frosted backdrop (CSS `backdrop-filter`).
+        //
+        // Painted *before* the drop shadow deliberately: the backdrop filter blurs whatever has
+        // been rendered into the target so far, so a shadow painted first would be part of what
+        // this element frosts. The shadow's gaussian tail reaches ~3·radius past the box and
+        // would drag a dark, near-uniform veil into the blur, flattening the contrast that makes
+        // a blur read as a blur — the effect degrades into an inner glow. (The box itself is
+        // knocked out of the drop shadow, so painting the shadow afterwards leaves the panel
+        // untouched; see `Window::paint_drop_shadows`.)
+        if !self.backdrop_filter.is_empty() {
+            window.paint_backdrop_filter(
+                scaled(bounds),
+                corner_radii.map(|radius| *radius * scale),
+                &self.backdrop_filter,
+            );
+        }
+
         if scale == 1. {
             window.paint_drop_shadows(bounds, corner_radii, &self.box_shadow);
         } else {
@@ -810,16 +828,6 @@ impl Style {
                 scaled(bounds),
                 corner_radii.map(|radius| *radius * scale),
                 &shadows,
-            );
-        }
-
-        // Blur the content behind this element before its (typically translucent) background
-        // is painted on top, so the background tints the frosted backdrop (CSS `backdrop-filter`).
-        if !self.backdrop_filter.is_empty() {
-            window.paint_backdrop_filter(
-                scaled(bounds),
-                corner_radii.map(|radius| *radius * scale),
-                &self.backdrop_filter,
             );
         }
 

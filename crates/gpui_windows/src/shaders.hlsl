@@ -941,13 +941,18 @@ float4 shadow_fragment(ShadowFragmentInput input): SV_TARGET {
         }
     }
 
+    // `saturate(0.5 ∓ d)` gives a 1-pixel antialiased edge: d <= -0.5 -> 1, d >= 0.5 -> 0.
+    float element_distance = quad_sdf(input.position.xy, shadow.element_bounds,
+                                      shadow.element_corner_radii);
     if (shadow.inset != 0u) {
         // The inset shadow is the complement of the (blurred) hole rect, clipped to the element.
-        // `saturate(0.5 - d)` gives a 1-pixel antialiased edge: d <= -0.5 -> 1, d >= 0.5 -> 0.
-        alpha = 1.0 - alpha;
-        float element_distance = quad_sdf(input.position.xy, shadow.element_bounds,
-                                          shadow.element_corner_radii);
-        alpha *= saturate(0.5 - element_distance);
+        alpha = (1.0 - alpha) * saturate(0.5 - element_distance);
+    } else {
+        // A drop shadow is painted only *outside* the element, as CSS specifies — the border box
+        // is knocked out of it. Invisible under an opaque background, but decisive under a
+        // translucent one: otherwise the shadow lies beneath the panel and tints it, and a
+        // backdrop filter ends up frosting that dark blob instead of the content behind.
+        alpha *= saturate(0.5 + element_distance);
     }
 
     return input.color * float4(1., 1., 1., alpha);

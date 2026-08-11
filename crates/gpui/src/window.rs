@@ -4014,6 +4014,10 @@ impl Window {
     /// z-index. Inset shadows are skipped; paint those with [`Self::paint_inset_shadows`]
     /// after the element's background so they layer on top of the fill.
     ///
+    /// The element's own box is knocked out of the shadow (CSS clips a drop shadow to outside
+    /// the border box), so a translucent background is not tinted by the shadow beneath it.
+    /// `element_bounds`/`element_corner_radii` on each [`Shadow`] describe that knockout.
+    ///
     /// This method should only be called as part of the paint phase of element drawing.
     pub fn paint_drop_shadows(
         &mut self,
