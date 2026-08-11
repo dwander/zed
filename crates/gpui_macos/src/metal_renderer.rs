@@ -952,11 +952,8 @@ impl MetalRenderer {
                         command_buffer,
                         current_target,
                         viewport_size,
-                        |color_attachment| {
-                            color_attachment.set_load_action(metal::MTLLoadAction::Load);
-                        },
+                        None,
                     );
-                    true
                 }
                 PrimitiveBatch::FilterBoundary(ix) => {
                     let boundary = scene.filter_boundaries[ix].clone();
@@ -975,11 +972,7 @@ impl MetalRenderer {
                                 command_buffer,
                                 current_target,
                                 viewport_size,
-                                |color_attachment| {
-                                    color_attachment.set_load_action(metal::MTLLoadAction::Clear);
-                                    color_attachment
-                                        .set_clear_color(metal::MTLClearColor::new(0., 0., 0., 0.));
-                                },
+                                Some(metal::MTLClearColor::new(0., 0., 0., 0.)),
                             );
                         } else {
                             filter_stack.push((boundary, current_target, false));
@@ -1012,13 +1005,10 @@ impl MetalRenderer {
                                 command_buffer,
                                 current_target,
                                 viewport_size,
-                                |color_attachment| {
-                                    color_attachment.set_load_action(metal::MTLLoadAction::Load);
-                                },
+                                None,
                             );
                         }
                     }
-                    true
                 }
                 PrimitiveBatch::SubpixelSprites { .. } => unreachable!(),
             }
@@ -1061,14 +1051,7 @@ impl MetalRenderer {
             command_buffer,
             target,
             target_viewport,
-            |color_attachment| {
-                if load {
-                    color_attachment.set_load_action(metal::MTLLoadAction::Load);
-                } else {
-                    color_attachment.set_load_action(metal::MTLLoadAction::Clear);
-                    color_attachment.set_clear_color(metal::MTLClearColor::new(0., 0., 0., 0.));
-                }
-            },
+            (!load).then(|| metal::MTLClearColor::new(0., 0., 0., 0.)),
         );
         encoder.set_render_pipeline_state(pipeline);
         encoder.set_vertex_buffer(
@@ -2018,6 +2001,8 @@ impl InstanceBufferWriter {
         drop(filled);
         current
     }
+}
+
 // Blur downsample/gaussian passes overwrite their target (no blending). The composite pass
 // uses the normal alpha-blending pipeline (`build_pipeline_state`) instead.
 fn build_blur_pipeline_state(
