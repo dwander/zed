@@ -49,11 +49,10 @@ unsafe fn make_cursor(image: &CustomCursorImage) -> Option<id> {
         .write_to(&mut Cursor::new(&mut png), ImageFormat::Png)
         .ok()?;
 
-    let data: id = NSData::dataWithBytes_length_(
-        nil,
-        png.as_ptr() as *const c_void,
-        png.len() as NSUInteger,
-    );
+    // Safety: `png` outlives the call, and NSData copies the bytes it is handed.
+    let data: id = unsafe {
+        NSData::dataWithBytes_length_(nil, png.as_ptr() as *const c_void, png.len() as NSUInteger)
+    };
     if data == nil {
         return None;
     }

@@ -8,8 +8,7 @@ use cocoa::{
 };
 use gpui::{
     AtlasTextureId, Background, Bounds, ContentMask, Corners, DevicePixels, FilterBoundary,
-    MonochromeSprite, PaintSurface, Path, Point, PolychromeSprite, PrimitiveBatch, Quad,
-    ScaledFilter, ScaledPixels, Scene, Shadow, Size, Surface, Underline, point, size,
+    PaintSurface, Path, Point, PrimitiveBatch, ScaledFilter, ScaledPixels, Scene, Size, point, size,
 };
 
 /// The largest blur radius in a scene-space filter chain, in device pixels — used to size the
