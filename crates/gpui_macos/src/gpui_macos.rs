@@ -53,6 +53,7 @@ pub(crate) use window::*;
 pub(crate) use text_system::*;
 
 pub use platform::MacPlatform;
+pub use window::set_drag_move_is_default;
 
 trait BoolExt {
     fn to_objc(self) -> BOOL;

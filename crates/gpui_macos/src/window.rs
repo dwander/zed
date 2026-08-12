@@ -3142,16 +3142,37 @@ extern "C" fn conclude_drag_operation(this: &Object, _: Sel, _: id) {
     send_file_drop_event(window_state, FileDropEvent::Exited);
 }
 
+/// What a modifier-free drop means to the host app: `true` = move, `false` = copy.
+///
+/// Outside the application this is not cosmetic. The destination picks the operation out of what
+/// the source allows, so offering move makes Finder move the files on a plain same-volume drop.
+/// Offering copy alone keeps a bare drop a copy, which is what an app whose default is copy means.
+static DRAG_MOVE_IS_DEFAULT: AtomicBool = AtomicBool::new(false);
+
+/// Sets what a modifier-free drop means to the host app, so an outbound drag offers the matching
+/// operation. Apps that treat a plain drop as a copy (the default) never need to call this.
+pub fn set_drag_move_is_default(is_move: bool) {
+    DRAG_MOVE_IS_DEFAULT.store(is_move, Ordering::Relaxed);
+}
+
 extern "C" fn dragging_session_source_operation_mask(
     _: &Object,
     _: Sel,
     _: id,
     context: NSInteger,
 ) -> NSDragOperation {
-    // Allow move everywhere. Outside the application the destination performs the operation
-    // itself (Finder moves the file when the user holds Command); the source must not delete
-    // anything - only NSDragOperationDelete (a drag to the Trash) asks the source to remove it.
-    let operation = NSDragOperationCopy | NSDragOperationMove;
+    // The destination decides which of the offered operations it performs, so what we offer is what
+    // a bare drop does. Offer move only when the host app says a plain drop means move - otherwise
+    // Finder would move the files on a same-volume drop even though the app's default is copy.
+    // The user can still reach the other operation with the standard modifiers.
+    //
+    // Either way the source never deletes anything: outside the application the destination carries
+    // out the move, and only NSDragOperationDelete (a drag to the Trash) asks the source to remove.
+    let operation = if DRAG_MOVE_IS_DEFAULT.load(Ordering::Relaxed) {
+        NSDragOperationCopy | NSDragOperationMove
+    } else {
+        NSDragOperationCopy
+    };
     log::debug!(
         "dragging_session_source_operation_mask: context={}, operation={}",
         context,
