@@ -635,6 +635,18 @@ impl MacWindowState {
         })
     }
 
+    /// Hide the minimize and zoom traffic-light buttons, leaving only close.
+    ///
+    /// Dropping `NSMiniaturizable`/`NSResizable` from the style mask only *disables* those buttons
+    /// (they stay visible, greyed out). A close-only dialog wants them gone, so hide them outright.
+    /// Resizing via window edges still works even with the zoom button hidden.
+    fn hide_minimize_and_zoom_buttons(&self) {
+        if let Some(buttons) = self.traffic_light_buttons() {
+            buttons.minimize.setHidden(true);
+            buttons.zoom.setHidden(true);
+        }
+    }
+
     fn titlebar_container(close_button: &Objc2NSButton) -> Option<Retained<Objc2NSView>> {
         // SAFETY: `close_button` comes from AppKit's `standardWindowButton(_:)`.
         // Although `superview` is unsafe, objc2 returns each result as `Retained<NSView>`.
@@ -793,6 +805,7 @@ impl MacWindow {
                 let () = msg_send![class!(NSWindow), setAllowsAutomaticWindowTabbing: NO];
             }
 
+            let has_titlebar = titlebar.is_some();
             let mut style_mask;
             if let Some(titlebar) = titlebar.as_ref() {
                 style_mask =
@@ -1103,6 +1116,11 @@ impl MacWindow {
             {
                 let mut window_state = window.0.lock();
                 window_state.move_traffic_light();
+                // A non-minimizable titled window is treated as a close-only dialog: hide the
+                // minimize and zoom buttons so only close remains (edge-resize is unaffected).
+                if has_titlebar && !is_minimizable {
+                    window_state.hide_minimize_and_zoom_buttons();
+                }
                 window_state.sheet_parent = sheet_parent;
             }
 
