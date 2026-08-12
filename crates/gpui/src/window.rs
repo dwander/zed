@@ -5,7 +5,8 @@ use crate::{
     AsyncWindowContext, AtlasTile, AvailableSpace, BackdropFilter, Background, BorderStyle, Bounds,
     BoxShadow, Capslock, Context, Corners, CursorHideMode, CursorStyle, Decorations, DevicePixels,
     DispatchActionListener, DispatchNodeId, DispatchTree, DisplayId, Edges, Effect, Entity,
-    EntityId, EventEmitter, FileDropEvent, Filter, FilterBoundary, FontId, Global, GlobalElementId,
+    EntityId, EventEmitter, ExternalDragPayload, FileDragPaths, FileDropEvent, Filter,
+    FilterBoundary, FontId, Global, GlobalElementId,
     GlyphId, GpuSpecs, Hsla, InputHandler, IsZero, KeyBinding, KeyContext, KeyDownEvent, KeyEvent,
     Keystroke, KeystrokeEvent, LayoutId, Lerp, LineLayoutIndex, Modifiers, ModifiersChangedEvent,
     MonochromeSprite, MouseButton, MouseEvent, MouseMoveEvent, MouseUpEvent, Path, Pixels,
@@ -5295,6 +5296,29 @@ impl Window {
             propagate: cx.propagate_event,
             default_prevented: self.default_prevented,
         }
+    }
+
+    /// Starts a native file drag out of this window, carrying `paths`.
+    ///
+    /// This is the explicit counterpart to [`Self::promote_external_drag_to_platform`], which turns
+    /// an in-app GPUI drag into a platform drag once the pointer leaves the window. Apps that track
+    /// the drag gesture themselves (their own press-and-move threshold, their own drag rendering)
+    /// call this instead, and get the same platform drag without going through `on_drag`.
+    ///
+    /// Returns whether the platform actually started a drag session. `false` means nothing is being
+    /// dragged - either the platform has no outbound drag support or it declined (for example
+    /// macOS needs a retained left mouse-down event, so this must be called while the button is
+    /// still down).
+    ///
+    /// The drag runs asynchronously on platforms whose session is non-blocking (macOS), so this
+    /// returning does not mean the drag has finished. Note that the destination performs the file
+    /// operation there: a move is carried out by the receiving app, and the source must not delete
+    /// the originals itself.
+    pub fn start_external_drag(&self, paths: FileDragPaths) -> bool {
+        self.platform_window.can_start_external_drag()
+            && self
+                .platform_window
+                .start_external_drag(&ExternalDragPayload::Files(paths))
     }
 
     fn promote_external_drag_to_platform(&mut self, event: &PlatformInput, cx: &mut App) {

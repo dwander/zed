@@ -111,8 +111,6 @@ const NSDragOperationNone: NSDragOperation = 0;
 const NSDragOperationCopy: NSDragOperation = 1;
 #[allow(non_upper_case_globals)]
 const NSDragOperationMove: NSDragOperation = 16;
-const NSDRAGGING_CONTEXT_OUTSIDE_APPLICATION: NSInteger = 0;
-const NSDRAGGING_CONTEXT_WITHIN_APPLICATION: NSInteger = 1;
 #[derive(PartialEq)]
 pub enum UserTabbingPreference {
     Never,
@@ -3150,11 +3148,10 @@ extern "C" fn dragging_session_source_operation_mask(
     _: id,
     context: NSInteger,
 ) -> NSDragOperation {
-    let operation = match context {
-        NSDRAGGING_CONTEXT_OUTSIDE_APPLICATION => NSDragOperationCopy,
-        NSDRAGGING_CONTEXT_WITHIN_APPLICATION => NSDragOperationCopy | NSDragOperationMove,
-        _ => NSDragOperationCopy | NSDragOperationMove,
-    };
+    // Allow move everywhere. Outside the application the destination performs the operation
+    // itself (Finder moves the file when the user holds Command); the source must not delete
+    // anything - only NSDragOperationDelete (a drag to the Trash) asks the source to remove it.
+    let operation = NSDragOperationCopy | NSDragOperationMove;
     log::debug!(
         "dragging_session_source_operation_mask: context={}, operation={}",
         context,
