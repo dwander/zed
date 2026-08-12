@@ -1326,6 +1326,19 @@ impl PlatformWindow for MacWindow {
         state.move_traffic_light();
     }
 
+    fn set_traffic_lights_dimmed(&self, dimmed: bool) {
+        // Fade the whole button cluster so it reads as "behind" the modal backdrop. AppKit still
+        // repaints each button's glyph, so setting the container's alpha is the one place that
+        // stays dim; per-button alpha gets clobbered on the next hover/redraw.
+        let alpha = if dimmed { 0.35 } else { 1.0 };
+        let state = self.0.lock();
+        if let Some(buttons) = state.traffic_light_buttons()
+            && let Some(container) = MacWindowState::titlebar_container(&buttons.close)
+        {
+            container.setAlphaValue(alpha);
+        }
+    }
+
     fn scale_factor(&self) -> f32 {
         self.0.as_ref().lock().scale_factor()
     }
