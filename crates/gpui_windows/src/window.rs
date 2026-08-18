@@ -458,17 +458,25 @@ impl WindowsWindow {
             draw_coordinator,
         } = creation_info;
         register_window_class(icon);
+        // Owner window. `Floating` and `Dialog` are both documented to sit above their parent, so
+        // hand the active window to `CreateWindowExW` as the owner. Neither style sets `WS_CHILD`,
+        // so this creates an ownership relation, not a parent/child one: the window keeps its own
+        // taskbar button (`WS_EX_APPWINDOW`) but can no longer be buried behind its owner.
+        let owner_hwnd = if matches!(params.kind, WindowKind::Floating | WindowKind::Dialog) {
+            let active_window = unsafe { GetActiveWindow() };
+            (!active_window.is_invalid()).then_some(active_window)
+        } else {
+            None
+        };
+        // Only `Dialog` is modal: disable the owner's input until this window is destroyed.
+        // `Floating` deliberately leaves the owner clickable, it just stays on top of it.
         let parent_hwnd = if params.kind == WindowKind::Dialog {
-            let parent_window = unsafe { GetActiveWindow() };
-            if parent_window.is_invalid() {
-                None
-            } else {
-                // Disable the parent window to make this dialog modal
+            if let Some(parent_window) = owner_hwnd {
                 unsafe {
                     EnableWindow(parent_window, false).as_bool();
                 };
-                Some(parent_window)
             }
+            owner_hwnd
         } else {
             None
         };
@@ -553,7 +561,7 @@ impl WindowsWindow {
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,
-                parent_hwnd,
+                owner_hwnd,
                 None,
                 Some(hinstance.into()),
                 Some(&context as *const _ as *const _),
