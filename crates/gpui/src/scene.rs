@@ -938,6 +938,11 @@ pub struct PolychromeSprite {
     pub content_mask: ContentMask<ScaledPixels>,
     pub corner_radii: Corners<ScaledPixels>,
     pub tile: AtlasTile,
+    /// Rotation/scale applied around the sprite's bounds (unit = no transform).
+    /// Mirrors [`MonochromeSprite::transformation`] so raster images can be rotated
+    /// (crop/straighten UI); the fragment shader keeps its rounded-corner SDF in
+    /// untransformed space by interpolating the pre-transform position.
+    pub transformation: TransformationMatrix,
 }
 
 impl From<PolychromeSprite> for Primitive {

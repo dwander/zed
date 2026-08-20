@@ -4575,6 +4575,7 @@ impl Window {
                 content_mask,
                 tile,
                 opacity,
+                transformation: TransformationMatrix::unit(),
             });
         }
         Ok(())
@@ -4653,6 +4654,13 @@ impl Window {
     ///
     /// The visible region rendered is `bounds.intersect(&image_bounds)`, with `corner_radii`
     /// applied to `bounds`.
+    ///
+    /// `transformation` rotates/scales the resulting quad around the origin baked into the
+    /// matrix (see [`crate::Transformation`]). Clipping against the content mask happens after
+    /// the transform, so a rotated image is still clipped by its scrolling/overflow ancestors.
+    /// Note that `bounds.intersect(&image_bounds)` is computed *before* the transform — pass
+    /// equal rects (e.g. `ObjectFit::Fill`) when rotating, or the sub-tiling below will slice
+    /// the image along unrotated axes.
     pub fn paint_image(
         &mut self,
         bounds: Bounds<Pixels>,
@@ -4661,6 +4669,7 @@ impl Window {
         data: Arc<RenderImage>,
         frame_index: usize,
         grayscale: bool,
+        transformation: TransformationMatrix,
     ) -> Result<()> {
         self.invalidator.debug_assert_paint();
 
@@ -4747,6 +4756,7 @@ impl Window {
             corner_radii,
             tile: sub_tile,
             opacity,
+            transformation,
         });
         Ok(())
     }
