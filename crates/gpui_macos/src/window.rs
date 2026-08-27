@@ -417,6 +417,11 @@ unsafe fn build_window_class(name: &'static str, superclass: &Class) -> *const C
         decl.add_method(sel!(close), close_window as extern "C" fn(&Object, Sel));
 
         decl.add_method(
+            sel!(animationResizeTime:),
+            animation_resize_time as extern "C" fn(&Object, Sel, NSRect) -> f64,
+        );
+
+        decl.add_method(
             sel!(draggingEntered:),
             dragging_entered as extern "C" fn(&Object, Sel, id) -> NSDragOperation,
         );
@@ -2286,6 +2291,16 @@ unsafe fn drop_window_state(object: &Object) {
         let raw: *mut c_void = *object.get_ivar(WINDOW_STATE_IVAR);
         Arc::from_raw(raw as *mut Mutex<MacWindowState>);
     }
+}
+
+// Window resize animations are disabled: `zoom:` (the green traffic-light button, a titlebar
+// double-click) and any `setFrame:display:animate:YES` finish in a single frame.
+//
+// AppKit's default is a frame animation of roughly a fifth of a second, and every step of it
+// re-lays-out the window's content. That is plainly visible in content that scales with the
+// window - an image view stretches and settles instead of simply appearing at its new size.
+extern "C" fn animation_resize_time(_: &Object, _: Sel, _: NSRect) -> f64 {
+    0.0
 }
 
 extern "C" fn yes(_: &Object, _: Sel) -> BOOL {
