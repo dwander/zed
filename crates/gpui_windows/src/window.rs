@@ -932,7 +932,18 @@ impl PlatformWindow for WindowsWindow {
     fn zoom(&self) {
         unsafe {
             if IsWindowVisible(self.0.hwnd).as_bool() {
-                ShowWindowAsync(self.0.hwnd, SW_MAXIMIZE).ok().log_err();
+                // `zoom` is a *toggle* (matching `NSWindow::zoom_`, which the macOS backend
+                // forwards to), so restore when the window is already zoomed. Without this,
+                // `Window::zoom_window` can only ever maximize on Windows, and an app that
+                // calls it to un-maximize silently does nothing.
+                // (The caption buttons are unaffected either way -- Windows itself handles
+                // those through the non-client hit test, never through this method.)
+                let cmd = if IsZoomed(self.0.hwnd).as_bool() {
+                    SW_RESTORE
+                } else {
+                    SW_MAXIMIZE
+                };
+                ShowWindowAsync(self.0.hwnd, cmd).ok().log_err();
             } else if let Some(mut status) = self.state.initial_placement.take() {
                 status.state = WindowOpenState::Maximized;
                 self.state.initial_placement.set(Some(status));
