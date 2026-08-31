@@ -100,9 +100,18 @@ impl Scene {
 
     pub fn insert_primitive(&mut self, primitive: impl Into<Primitive>) {
         let mut primitive = primitive.into();
-        let clipped_bounds = primitive
-            .bounds()
-            .intersect(&primitive.content_mask().bounds);
+        // A drop shadow paints outside its own `bounds`: the shader expands the geometry by
+        // `3 * blur_radius` to leave room for the gaussian tail (see `shadow_vertex`). Ordering it
+        // by the un-expanded rect makes the tail invisible wherever it lands on content painted
+        // earlier — the bounds tree sees no overlap, hands the shadow a low order, and the earlier
+        // primitive (an image sprite, say) draws over it. Order by the area actually painted.
+        let painted_bounds = match &primitive {
+            Primitive::Shadow(shadow) if shadow.inset == 0 => {
+                shadow.bounds.dilate(shadow.blur_radius * 3.)
+            }
+            _ => *primitive.bounds(),
+        };
+        let clipped_bounds = painted_bounds.intersect(&primitive.content_mask().bounds);
 
         // Content-filter boundaries must always be inserted as matched pairs — dropping one
         // (e.g. for an empty clipped region) would orphan its partner and corrupt the renderer's
