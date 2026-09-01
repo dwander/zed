@@ -1,9 +1,10 @@
 use crate::{
-    AnyElement, AnyImageCache, App, Asset, AssetLogger, Bounds, DefiniteLength, Element, ElementId,
-    Entity, GlobalElementId, Hitbox, Image, ImageCache, InspectorElementId, InteractiveElement,
-    Interactivity, IntoElement, LayoutId, Length, ObjectFit, Pixels, RenderImage, Resource,
-    SharedString, SharedUri, StyleRefinement, Styled, Task, Transformation, TransformationMatrix,
-    Window, decode_static_image, decode_static_image_from_decoder, px,
+    AnyElement, AnyImageCache, App, Asset, AssetLogger, Background, BorderStyle, Bounds,
+    DefiniteLength, Edges, Element, ElementId, Entity, GlobalElementId, Hitbox, Hsla, Image,
+    ImageCache, InspectorElementId, InteractiveElement, Interactivity, IntoElement, LayoutId,
+    Length, ObjectFit, Pixels, RenderImage, Resource, SharedString, SharedUri, StyleRefinement,
+    Styled, Task, Transformation, TransformationMatrix, Window, decode_static_image,
+    decode_static_image_from_decoder, px, quad,
 };
 use anyhow::Result;
 
@@ -130,6 +131,7 @@ pub struct ImageStyle {
     grayscale: bool,
     object_fit: ObjectFit,
     transformation: Option<Transformation>,
+    backdrop: SmallVec<[Background; 2]>,
     loading: Option<Box<dyn Fn() -> AnyElement>>,
     fallback: Option<Box<dyn Fn() -> AnyElement>>,
 }
@@ -140,6 +142,7 @@ impl Default for ImageStyle {
             grayscale: false,
             object_fit: ObjectFit::Contain,
             transformation: None,
+            backdrop: SmallVec::new(),
             loading: None,
             fallback: None,
         }
@@ -160,6 +163,21 @@ pub trait StyledImage: Sized {
     /// Set the object fit for the image.
     fn object_fit(mut self, object_fit: ObjectFit) -> Self {
         self.image_style().object_fit = object_fit;
+        self
+    }
+
+    /// Paint background layers behind the image, covering exactly the rect the image is
+    /// painted into (`object_fit` applied) rather than the whole element bounds.
+    ///
+    /// `.bg()` covers the element bounds, so a letterboxed image (`ObjectFit::Contain`) would
+    /// get the background in the empty bars too. This is for backgrounds that only make sense
+    /// *under the pixels*, such as a checkerboard behind an image with an alpha channel.
+    /// Layers paint in the given order (first = bottom).
+    ///
+    /// The layers are not affected by [`Self::with_transformation`] — they always cover the
+    /// untransformed painted rect.
+    fn image_backdrop(mut self, layers: impl IntoIterator<Item = Background>) -> Self {
+        self.image_style().backdrop = layers.into_iter().collect();
         self
     }
 
@@ -504,6 +522,16 @@ impl Element for Img {
                         .object_fit
                         .get_bounds(bounds, data.size(layout_state.frame_index));
                     let corner_radii = style.corner_radii.to_pixels(window.rem_size());
+                    for layer in self.style.backdrop.iter().copied() {
+                        window.paint_quad(quad(
+                            new_bounds,
+                            corner_radii,
+                            layer,
+                            Edges::default(),
+                            Hsla::transparent_black(),
+                            BorderStyle::default(),
+                        ));
+                    }
                     let transformation = self
                         .style
                         .transformation
