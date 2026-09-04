@@ -2888,10 +2888,15 @@ impl Interactivity {
         if !drop_listeners.is_empty() {
             // Under the cursor and able to take what's being dragged? Latch it on the window so the
             // platform can show the drag as accepted here (and as refused everywhere else).
+            //
+            // Modality-independent on purpose: an OS-driven drag takes the pointer captive and
+            // sends us no mouse events of its own, so if the last thing the user did in this
+            // window was press a key, `is_hovered` would report nothing hovered for the whole
+            // drag and every drop target would go dead.
             if let Some(drag) = cx.active_drag.take() {
                 let drag_type = drag.value.as_ref().type_id();
                 let accepts = drop_listeners.iter().any(|(ty, _)| *ty == drag_type)
-                    && hitbox.is_hovered_ignoring_last_input(window)
+                    && hitbox.id.is_hovered_ignoring_last_input(window)
                     && can_drop_predicate
                         .as_ref()
                         .is_none_or(|predicate| predicate(drag.value.as_ref(), window, cx));
@@ -2906,7 +2911,7 @@ impl Interactivity {
                 move |_: &MouseUpEvent, phase, window, cx| {
                     if let Some(drag) = &cx.active_drag
                         && phase == DispatchPhase::Bubble
-                        && hitbox.is_hovered_ignoring_last_input(window)
+                        && hitbox.id.is_hovered_ignoring_last_input(window)
                     {
                         let drag_state_type = drag.value.as_ref().type_id();
                         for (drop_state_type, listener) in &drop_listeners {
@@ -3490,7 +3495,7 @@ impl Interactivity {
 
                     for (state_type, build_drag_over_style) in &self.drag_over_styles {
                         if *state_type == drag.value.as_ref().type_id()
-                            && hitbox.is_hovered_ignoring_last_input(window)
+                            && hitbox.id.is_hovered_ignoring_last_input(window)
                         {
                             style.refine(&build_drag_over_style(drag.value.as_ref(), window, cx));
                         }

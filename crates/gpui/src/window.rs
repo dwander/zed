@@ -854,16 +854,6 @@ impl Hitbox {
         self.id.is_hovered(window)
     }
 
-    /// Like [`Hitbox::is_hovered`], but ignoring the input modality. Use it for pointer-driven
-    /// interactions that must keep working while the keyboard is what last drove the UI — a cursor
-    /// shape, or a drag in flight. An OS-driven drag is the sharp case: it takes the pointer
-    /// captive and sends us no mouse events of its own, so if the last thing the user did in this
-    /// window was press a key, `is_hovered` would report nothing as hovered for the whole drag and
-    /// every drop target would go dead.
-    pub(crate) fn is_hovered_ignoring_last_input(&self, window: &Window) -> bool {
-        self.id.is_hovered_ignoring_last_input(window)
-    }
-
     /// Checks whether this hitbox would be hovered at `position`, regardless of the current input
     /// modality or mouse position.
     pub fn is_hovered_at(&self, position: Point<Pixels>, window: &Window) -> bool {
