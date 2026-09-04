@@ -2525,9 +2525,15 @@ extern "C" fn handle_key_event(this: &Object, native_event: id, key_equivalent: 
                 })
                 .unwrap_or(false);
 
+            // 키패드 내비 모드로 이름이 바뀐 키는 IME 를 건너뛰고 곧장 키맵으로 보낸다 —
+            // 원본 이벤트의 문자가 인쇄 가능해서 `insertText:` 로 삼켜지기 때문이다
+            // (`events::is_keypad_event` 에 자세히). 조합 중일 때는 IME 몫이 먼저다.
+            let is_keypad = unsafe { crate::events::is_keypad_event(native_event) };
+
             if is_composing
                 || is_ime_printable_key
-                || (key_down_event.keystroke.key_char.is_none()
+                || (!is_keypad
+                    && key_down_event.keystroke.key_char.is_none()
                     && !key_down_event.keystroke.modifiers.control
                     && !key_down_event.keystroke.modifiers.function
                     && !key_down_event.keystroke.modifiers.platform)

@@ -56,6 +56,7 @@ pub(crate) use window::*;
 #[cfg(feature = "font-kit")]
 pub(crate) use text_system::*;
 
+pub use events::{keypad_nav_mode, set_keypad_nav_mode};
 pub use platform::MacPlatform;
 pub use window::set_drag_move_is_default;
 

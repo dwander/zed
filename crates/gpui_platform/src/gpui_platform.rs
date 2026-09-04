@@ -73,6 +73,35 @@ pub fn set_drag_move_is_default(is_move: bool) {
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
 pub fn set_drag_move_is_default(_is_move: bool) {}
 
+/// Turns keypad navigation mode on or off (macOS only).
+///
+/// macOS has no NumLock, so a numeric keypad always reports digits and an app that wants the
+/// keypad to work as a navigation cluster has to emulate it. While this is on, the keypad's
+/// digits and Enter arrive as `up`/`down`/`left`/`right`/`home`/`end`/`pageup`/`pagedown`/
+/// `kp_enter` instead of characters. Off (the default) nothing changes.
+///
+/// The keypad's `clear` (the NumLock position on a PC-layout keypad) and `*` always arrive as
+/// `kp_clear` and `kp_multiply` so the app has a key to toggle the mode with. No-op elsewhere,
+/// where NumLock already does this in hardware.
+#[cfg(target_os = "macos")]
+pub fn set_keypad_nav_mode(on: bool) {
+    gpui_macos::set_keypad_nav_mode(on);
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn set_keypad_nav_mode(_on: bool) {}
+
+/// Whether keypad navigation mode is on. Always false where it does not apply.
+#[cfg(target_os = "macos")]
+pub fn keypad_nav_mode() -> bool {
+    gpui_macos::keypad_nav_mode()
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn keypad_nav_mode() -> bool {
+    false
+}
+
 /// Returns the default [`Platform`] for the current OS.
 pub fn current_platform(headless: bool) -> Rc<dyn Platform> {
     #[cfg(target_os = "macos")]
