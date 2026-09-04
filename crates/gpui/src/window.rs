@@ -11,7 +11,7 @@ use crate::{
     DispatchActionListener, DispatchNodeId, DispatchTree, DisplayId, Edges, Effect, Entity,
     EntityId, EventEmitter, ExternalDragPayload, FileDragPaths, FileDropEvent, Filter,
     FilterBoundary, FontId, Global, GlobalElementId, GlyphId, GpuSpecs, Hsla, InputHandler, IsZero,
-    KeyBinding, KeyContext, KeyDownEvent, KeyEvent, Keystroke, KeystrokeEvent, LayoutId, Lerp,
+    KeyBinding, KeyContext, KeyDownEvent, KeyEvent, Keystroke, KeystrokeEvent, LayoutId,
     LineLayoutIndex, Modifiers, ModifiersChangedEvent, MonochromeSprite, MouseButton, MouseEvent,
     MouseMoveEvent, MouseUpEvent, Path, Pixels, PlatformAtlas, PlatformDisplay, PlatformInput,
     PlatformInputHandler, PlatformWindow, Point, PolychromeSprite, Priority, PromptButton,
@@ -21,7 +21,7 @@ use crate::{
     SubpixelSprite, SubscriberSet, Subscription, SystemWindowTab, SystemWindowTabController,
     TabStopMap, TaffyLayoutEngine, Task, TextInputConfiguration, TextInputStateChange,
     TextRenderingMode, TextStyle, TextStyleRefinement, ThermalState, TransformationMatrix,
-    Transition, TransitionState, Underline, UnderlineStyle, WindowAppearance,
+    Underline, UnderlineStyle, WindowAppearance,
     WindowBackgroundAppearance, WindowBounds, WindowControls, WindowDecorations, WindowOptions,
     WindowParams, WindowTextSystem, point, prelude::*, px, rems, size, transparent_black,
 };
@@ -4013,42 +4013,6 @@ impl Window {
             cx,
             init,
         )
-    }
-
-    /// Creates a new transition with automatic state management.
-    ///
-    /// The state for this transition is managed internally and will be recreated
-    /// on each render. For persistent state across renders, use [`use_keyed_transition`](Self::use_keyed_transition).
-    pub fn use_transition<T: Lerp + Clone + PartialEq + 'static>(
-        &mut self,
-        cx: &mut App,
-        duration: Duration,
-        init: impl Fn(&mut Window, &mut Context<TransitionState<T>>) -> T,
-    ) -> Transition<T> {
-        let state = self.use_state(cx, |window, cx| TransitionState::new(init(window, cx)));
-
-        Transition::new(state, duration)
-    }
-
-    /// Creates a new keyed transition with persistent state.
-    ///
-    /// The state for this transition is associated with the provided key and will
-    /// persist across renders as long as the key remains the same. This is the
-    /// recommended method for most use cases where you want smooth, continuous
-    /// animations.
-    ///
-    /// This method should only be called during `Render::render`, `RenderOnce::render`, or the drawing functions of `Element`.
-    pub fn use_keyed_transition<T: Lerp + Clone + PartialEq + 'static>(
-        &mut self,
-        key: impl Into<ElementId>,
-        cx: &mut App,
-        duration: Duration,
-        init: impl Fn(&mut Window, &mut Context<TransitionState<T>>) -> T,
-    ) -> Transition<T> {
-        let state =
-            self.use_keyed_state(key, cx, |window, cx| TransitionState::new(init(window, cx)));
-
-        Transition::new(state, duration)
     }
 
     /// Updates or initializes state for an element with the given id that lives across multiple
