@@ -47,7 +47,7 @@ use objc::{
 };
 use objc2::{MainThreadMarker, runtime::AnyObject};
 use objc2_app_kit::{
-    NSModalResponse, NSModalResponseOK, NSOpenPanel, NSSavePanel, NSWorkspace,
+    NSModalResponse, NSModalResponseOK, NSOpenPanel, NSSavePanel, NSWindowLevel, NSWorkspace,
     NSWorkspaceDidWakeNotification, NSWorkspaceWillSleepNotification,
 };
 use objc2_foundation::NSActivityOptions;
@@ -513,6 +513,18 @@ impl MacPlatform {
     }
 }
 
+/// 파일 선택/저장 패널을 앱의 **항상 위** 창보다 앞으로 올린다.
+///
+/// `beginWithCompletionHandler:` 로 띄운 패널은 앱 모달이 아니라 모달리스 창이라 기본
+/// 레벨(`NSNormalWindowLevel` = 0)에 놓인다. 앱이 [`WindowKind::Floating`](gpui::WindowKind)
+/// 창(레벨 3)을 띄워 둔 상태면 패널이 **그 뒤에 깔려** 사용자 눈에는 아무 일도 일어나지
+/// 않은 것처럼 보인다. 모달 패널 레벨로 올려 어떤 경우에도 앞에 오게 한다.
+fn raise_panel_above_floating_windows(panel: &NSSavePanel) {
+    // NSModalPanelWindowLevel — 플로팅 창(3)보다 위, 팝업(101)보다 아래.
+    const NS_MODAL_PANEL_WINDOW_LEVEL: NSWindowLevel = 8;
+    panel.setLevel(NS_MODAL_PANEL_WINDOW_LEVEL);
+}
+
 impl Platform for MacPlatform {
     fn background_executor(&self) -> BackgroundExecutor {
         self.0.lock().background_executor.clone()
@@ -869,6 +881,7 @@ impl Platform for MacPlatform {
                     panel.setPrompt(Some(&NSString::from_str(prompt.as_str())));
                 }
 
+                raise_panel_above_floating_windows(&panel);
                 panel.beginWithCompletionHandler(&handler);
             })
             .detach();
@@ -941,6 +954,7 @@ impl Platform for MacPlatform {
                     }
                 });
 
+                raise_panel_above_floating_windows(&panel);
                 panel.beginWithCompletionHandler(&handler);
             })
             .detach();
