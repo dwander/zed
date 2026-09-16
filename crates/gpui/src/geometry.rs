@@ -2265,12 +2265,21 @@ impl Anchor {
         point(x, y)
     }
 
-    /// Returns true if at the center.
+    /// Returns whether the anchor is center-positioned.
     #[inline]
     pub fn is_center(&self) -> bool {
         matches!(
             self,
             Self::TopCenter | Self::BottomCenter | Self::LeftCenter | Self::RightCenter
+        )
+    }
+
+    /// Returns whether the anchor is bottom-positioned.
+    #[inline]
+    pub fn is_bottom(&self) -> bool {
+        matches!(
+            self,
+            Self::BottomCenter | Self::BottomLeft | Self::BottomRight
         )
     }
 }
