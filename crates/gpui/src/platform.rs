@@ -915,6 +915,16 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
         false
     }
     fn resize(&mut self, size: Size<Pixels>);
+    /// Move and resize the window in one step, in the same logical, display-relative
+    /// coordinates that [`PlatformWindow::bounds`] reports.
+    ///
+    /// `resize` keeps the existing origin, so a caller that wants to keep a window
+    /// centered while its size follows its content has no way to express that without
+    /// a visible two-step jump. Backends that cannot move a window fall back to
+    /// resizing in place.
+    fn set_bounds(&mut self, bounds: Bounds<Pixels>) {
+        self.resize(bounds.size);
+    }
     fn scale_factor(&self) -> f32;
     fn appearance(&self) -> WindowAppearance;
     fn display(&self) -> Option<Rc<dyn PlatformDisplay>>;

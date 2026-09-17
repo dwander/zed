@@ -1456,6 +1456,35 @@ impl PlatformWindow for MacWindow {
             .detach();
     }
 
+    fn set_bounds(&mut self, bounds: Bounds<Pixels>) {
+        let this = self.0.lock();
+        let window = this.native_window;
+        let closed = this.closed.clone();
+        this.foreground_executor
+            .spawn(async move {
+                if_window_not_closed(closed, || unsafe {
+                    let screen = NSWindow::screen(window);
+                    if screen == nil {
+                        return;
+                    }
+                    // Exact inverse of `MacWindowState::bounds`, so a set/get round trip agrees:
+                    // frame coordinates, bottom-left origin, relative to the window's screen.
+                    let screen_frame = NSScreen::frame(screen);
+                    let flipped_y = bounds.origin.y.as_f32() as f64 - screen_frame.origin.y;
+                    let height = bounds.size.height.as_f32() as f64;
+                    let frame = NSRect::new(
+                        NSPoint::new(
+                            screen_frame.origin.x + bounds.origin.x.as_f32() as f64,
+                            screen_frame.size.height - flipped_y - height,
+                        ),
+                        NSSize::new(bounds.size.width.as_f32() as f64, height),
+                    );
+                    window.setFrame_display_(frame, YES);
+                })
+            })
+            .detach();
+    }
+
     fn merge_all_windows(&self) {
         let native_window = self.0.lock().native_window;
         extern "C" fn merge_windows_async(context: *mut std::ffi::c_void) {

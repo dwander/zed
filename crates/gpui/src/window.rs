@@ -2711,6 +2711,13 @@ impl Window {
         self.platform_window.resize(size);
     }
 
+    /// Move and resize the window in one step, in the same coordinates [`Window::bounds`]
+    /// reports. Unlike [`Window::resize`] this can keep a window centered while its size
+    /// follows its content. Backends that cannot move a window only resize it.
+    pub fn set_bounds(&mut self, bounds: Bounds<Pixels>) {
+        self.platform_window.set_bounds(bounds);
+    }
+
     /// Returns whether or not the window is currently fullscreen
     pub fn is_fullscreen(&self) -> bool {
         self.platform_window.is_fullscreen()
