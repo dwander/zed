@@ -867,16 +867,22 @@ impl MacWindowState {
         }
     }
 
+    /// Whether the window is zoomed, which is what "maximized" means on macOS.
+    ///
+    /// This asks AppKit (`-[NSWindow isZoomed]`) instead of comparing the window's size
+    /// against the screen's visible frame, so that it agrees with [`Self::zoom`] below —
+    /// that is `-[NSWindow zoom:]`, a *toggle* AppKit decides from this very flag (the
+    /// window's whole frame, position included, against its standard frame).
+    ///
+    /// A size-only comparison disagrees with it for a window that is as large as the
+    /// visible frame but sits somewhere else, and a caller that gates a zoom on
+    /// `is_maximized()` then gets the opposite of what it asked for: it reads "maximized",
+    /// calls `zoom()` to undo it, and AppKit — which does not consider the window zoomed —
+    /// maximizes it instead.
     fn is_maximized(&self) -> bool {
-        fn rect_to_size(rect: NSRect) -> Size<Pixels> {
-            let NSSize { width, height } = rect.size;
-            size(width.into(), height.into())
-        }
-
         unsafe {
-            let bounds = self.bounds();
-            let screen_size = rect_to_size(self.native_window.screen().visibleFrame());
-            bounds.size == screen_size
+            let zoomed: BOOL = msg_send![self.native_window, isZoomed];
+            zoomed == YES
         }
     }
 
