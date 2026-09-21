@@ -8,8 +8,9 @@ use crate::{
     AbsoluteLength, App, Background, BackgroundTag, BorderStyle, Bounds, ContentMask, Corners,
     CornersRefinement, CursorStyle, DefiniteLength, DevicePixels, Edges, EdgesRefinement, Font,
     FontFallbacks, FontFeatures, FontStyle, FontWeight, GridLocation, Hsla, Length, Pixels, Point,
-    PointRefinement, Rgba, ScaledPixels, SharedString, Size, SizeRefinement, Styled, TextRun,
-    Window, black, phi, point, px, quad, rems, size,
+    DEFAULT_DASH_GAP_PER_BORDER_WIDTH, DEFAULT_DASH_LENGTH_PER_BORDER_WIDTH, PointRefinement,
+    Rgba, ScaledPixels, SharedString, Size, SizeRefinement, Styled, TextRun, Window, black, phi,
+    point, px, quad, rems, size,
 };
 use collections::HashSet;
 use refineable::Refineable;
@@ -283,6 +284,14 @@ pub struct Style {
 
     /// The border style of this element
     pub border_style: BorderStyle,
+
+    /// The length of each border dash, as a multiple of the border width.
+    /// Only used when `border_style` is [`BorderStyle::Dashed`].
+    pub border_dashed_length: f32,
+
+    /// The gap between border dashes, as a multiple of the border width.
+    /// Only used when `border_style` is [`BorderStyle::Dashed`].
+    pub border_dashed_gap: f32,
 
     /// The radius of the corners of this element
     #[refineable]
@@ -870,14 +879,18 @@ impl Style {
                 let border_widths = self.border_widths.to_pixels(rem_size);
                 let mut background = self.border_color.unwrap_or_default();
                 background.a = 0.;
-                window.paint_quad(quad(
-                    bounds,
-                    corner_radii,
-                    background,
-                    border_widths,
-                    self.border_color.unwrap_or_default(),
-                    self.border_style,
-                ));
+                window.paint_quad_dashed(
+                    quad(
+                        bounds,
+                        corner_radii,
+                        background,
+                        border_widths,
+                        self.border_color.unwrap_or_default(),
+                        self.border_style,
+                    ),
+                    self.border_dashed_length,
+                    self.border_dashed_gap,
+                );
             }
         };
 
@@ -943,6 +956,8 @@ impl Default for Style {
             background: None,
             border_color: None,
             border_style: BorderStyle::default(),
+            border_dashed_length: DEFAULT_DASH_LENGTH_PER_BORDER_WIDTH,
+            border_dashed_gap: DEFAULT_DASH_GAP_PER_BORDER_WIDTH,
             corner_radii: Corners::default(),
             box_shadow: Default::default(),
             filter: Default::default(),

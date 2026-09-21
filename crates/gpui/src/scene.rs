@@ -667,6 +667,12 @@ impl PrimitiveBatch {
 pub struct Quad {
     pub order: DrawOrder,
     pub border_style: BorderStyle,
+    /// Dash length as a multiple of the border width. Only read when
+    /// `border_style` is [`BorderStyle::Dashed`].
+    pub border_dashed_length: f32,
+    /// Gap between dashes as a multiple of the border width. Only read when
+    /// `border_style` is [`BorderStyle::Dashed`].
+    pub border_dashed_gap: f32,
     pub bounds: Bounds<ScaledPixels>,
     pub content_mask: ContentMask<ScaledPixels>,
     pub background: Background,
@@ -793,6 +799,14 @@ pub enum BorderStyle {
     /// A dashed border.
     Dashed = 1,
 }
+
+/// The default dash length, as a multiple of the border width. Browsers size
+/// dashes relative to the border width, which also keeps dashes from adjacent
+/// sides overlapping when the dash is smaller than the border is thick.
+pub const DEFAULT_DASH_LENGTH_PER_BORDER_WIDTH: f32 = 2.0;
+
+/// The default gap between dashes, as a multiple of the border width.
+pub const DEFAULT_DASH_GAP_PER_BORDER_WIDTH: f32 = 1.0;
 
 /// A data type representing a 2 dimensional transformation that can be applied to an element.
 #[derive(Debug, Clone, Copy, PartialEq)]

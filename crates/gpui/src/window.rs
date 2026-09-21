@@ -7,8 +7,10 @@ use crate::profiler;
 use crate::{
     Action, AnyDrag, AnyElement, AnyImageCache, AnyTooltip, AnyView, App, AppContext, Arena, Asset,
     AsyncWindowContext, AtlasTile, AvailableSpace, BackdropFilter, Background, BorderStyle, Bounds,
-    BoxShadow, Capslock, Context, Corners, CursorHideMode, CursorStyle, Decorations, DevicePixels,
-    DispatchActionListener, DispatchNodeId, DispatchTree, DisplayId, Edges, Effect, Entity,
+    BoxShadow, Capslock, Context, Corners, CursorHideMode, CursorStyle,
+    DEFAULT_DASH_GAP_PER_BORDER_WIDTH, DEFAULT_DASH_LENGTH_PER_BORDER_WIDTH, Decorations,
+    DevicePixels, DispatchActionListener, DispatchNodeId, DispatchTree, DisplayId, Edges, Effect,
+    Entity,
     EntityId, EventEmitter, ExternalDragPayload, FileDragPaths, FileDropEvent, Filter,
     FilterBoundary, FontId, Global, GlobalElementId, GlyphId, GpuSpecs, Hsla, InputHandler, IsZero,
     KeyBinding, KeyContext, KeyDownEvent, KeyEvent, Keystroke, KeystrokeEvent, LayoutId,
@@ -4532,11 +4534,39 @@ impl Window {
     /// where the circular arcs meet. This will not display well when combined with dashed borders.
     /// Use `Corners::clamp_radii_for_quad_size` if the radii should fit within the bounds.
     pub fn paint_quad(&mut self, quad: PaintQuad) {
+        self.paint_quad_dashed(
+            quad,
+            DEFAULT_DASH_LENGTH_PER_BORDER_WIDTH,
+            DEFAULT_DASH_GAP_PER_BORDER_WIDTH,
+        )
+    }
+
+    /// Paints a quad whose dashed border uses the given dash length and gap,
+    /// each as a multiple of the border width. Both are ignored unless the
+    /// quad's border style is [`BorderStyle::Dashed`].
+    ///
+    /// This is the same as [`Window::paint_quad`], which uses the browser-like
+    /// defaults of 2 and 1. Widening the gap relative to the length gives a
+    /// sparser dash without thickening the border.
+    ///
+    /// This method should only be called as part of the paint phase of element
+    /// drawing.
+    pub fn paint_quad_dashed(&mut self, quad: PaintQuad, dash_length: f32, dash_gap: f32) {
         self.invalidator.debug_assert_paint();
 
         let opacity = self.element_opacity();
         let snapped_bounds = self.snap_bounds(quad.bounds);
         let snapped_border_widths = self.snap_border_widths(quad.border_widths);
+        // A zero-length period would divide by zero in the shader and erase the
+        // border entirely, so an empty dash pattern falls back to the default.
+        let (dashed_length, dashed_gap) = if dash_length.max(0.) + dash_gap.max(0.) > 0. {
+            (dash_length.max(0.), dash_gap.max(0.))
+        } else {
+            (
+                DEFAULT_DASH_LENGTH_PER_BORDER_WIDTH,
+                DEFAULT_DASH_GAP_PER_BORDER_WIDTH,
+            )
+        };
         let quad = Quad {
             order: 0,
             bounds: snapped_bounds,
@@ -4546,6 +4576,8 @@ impl Window {
             corner_radii: quad.corner_radii.scale(self.scale_factor()),
             border_widths: snapped_border_widths,
             border_style: quad.border_style,
+            border_dashed_length: dashed_length,
+            border_dashed_gap: dashed_gap,
         };
 
         if !quad.background.is_transparent() {

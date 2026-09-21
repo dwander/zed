@@ -519,6 +519,8 @@ fn gradient_color(background: Background, position: vec2<f32>, bounds: Bounds,
 struct Quad {
     order: u32,
     border_style: u32,
+    border_dashed_length: f32,
+    border_dashed_gap: f32,
     bounds: Bounds,
     content_mask: Bounds,
     background: Background,
@@ -702,9 +704,11 @@ fn fs_quad(input: QuadVarying) -> @location(0) vec4<f32> {
             // used by browsers, but also avoids dashes from different segments
             // overlapping when dash size is smaller than the border width.
             //
-            // Dash pattern: (2 * border width) dash, (1 * border width) gap
-            let dash_length_per_width = 2.0;
-            let dash_gap_per_width = 1.0;
+            // Dash pattern: (border_dashed_length * border width) dash,
+            // (border_dashed_gap * border width) gap. Both default to the
+            // browser-like 2 and 1.
+            let dash_length_per_width = quad.border_dashed_length;
+            let dash_gap_per_width = quad.border_dashed_gap;
             let dash_period_per_width = dash_length_per_width + dash_gap_per_width;
 
             // Since the dash size is determined by border width, the density of

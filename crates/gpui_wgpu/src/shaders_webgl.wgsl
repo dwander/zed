@@ -136,10 +136,12 @@ fn read_transformation(cursor: ptr<function, InstanceCursor>) -> TransformationM
 }
 
 fn load_quad(instance_id: u32) -> Quad {
-    var cursor = instance_cursor(instance_id * 40u);
+    var cursor = instance_cursor(instance_id * 42u);
     return Quad(
         read_word(&cursor),
         read_word(&cursor),
+        read_f32(&cursor),
+        read_f32(&cursor),
         read_bounds(&cursor),
         read_bounds(&cursor),
         read_background(&cursor),

@@ -226,10 +226,12 @@ fragment float4 quad_fragment(QuadFragmentInput input [[stage_in]],
       // used by browsers, but also avoids dashes from different segments
       // overlapping when dash size is smaller than the border width.
       //
-      // Dash pattern: (2 * border width) dash, (1 * border width) gap
-      const float dash_length_per_width = 2.0;
-      const float dash_gap_per_width = 1.0;
-      const float dash_period_per_width = dash_length_per_width + dash_gap_per_width;
+      // Dash pattern: (border_dashed_length * border width) dash,
+      // (border_dashed_gap * border width) gap. Both default to the
+      // browser-like 2 and 1.
+      float dash_length_per_width = quad.border_dashed_length;
+      float dash_gap_per_width = quad.border_dashed_gap;
+      float dash_period_per_width = dash_length_per_width + dash_gap_per_width;
 
       // Since the dash size is determined by border width, the density of
       // dashes varies. Multiplying a pixel distance by this returns a
@@ -238,7 +240,7 @@ fragment float4 quad_fragment(QuadFragmentInput input [[stage_in]],
       float dash_velocity = 0.0;
 
       // Dividing this by the border width gives the dash velocity
-      const float dv_numerator = 1.0 / dash_period_per_width;
+      float dv_numerator = 1.0 / dash_period_per_width;
 
       if (unrounded) {
         // When corners aren't rounded, the dashes are separately laid
