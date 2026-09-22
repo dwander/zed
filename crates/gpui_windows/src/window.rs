@@ -1228,15 +1228,23 @@ pub fn set_drag_move_is_default(is_move: bool) {
 ///
 /// Where a drop *is* accepted the badge follows the Windows convention — Ctrl copies, Shift moves,
 /// and a bare drop does whatever the host app calls its default ([`set_drag_move_is_default`]) —
-/// regardless of where the drag came from.
-fn hover_drop_effect(accepted: Option<bool>, grfkeystate: MODIFIERKEYS_FLAGS) -> DROPEFFECT {
-    if accepted == Some(false) {
+/// regardless of where the drag came from. The source's allowed effects still bound that choice:
+/// a copy-only source must never be shown a move cursor.
+fn hover_drop_effect(
+    accepted: Option<bool>,
+    grfkeystate: MODIFIERKEYS_FLAGS,
+    allowed: DROPEFFECT,
+) -> DROPEFFECT {
+    // This target commits only COPY, even when the app performs an internal move itself.
+    if accepted == Some(false) || allowed.0 & DROPEFFECT_COPY.0 == 0 {
         DROPEFFECT_NONE
     } else if (grfkeystate & MK_CONTROL).0 != 0 {
         DROPEFFECT_COPY
-    } else if (grfkeystate & MK_SHIFT).0 != 0 {
+    } else if (grfkeystate & MK_SHIFT).0 != 0 && allowed.0 & DROPEFFECT_MOVE.0 != 0 {
         DROPEFFECT_MOVE
-    } else if DRAG_MOVE_IS_DEFAULT.load(Ordering::Relaxed) {
+    } else if DRAG_MOVE_IS_DEFAULT.load(Ordering::Relaxed)
+        && allowed.0 & DROPEFFECT_MOVE.0 != 0
+    {
         DROPEFFECT_MOVE
     } else {
         DROPEFFECT_COPY
@@ -1253,11 +1261,11 @@ fn hover_drop_effect(accepted: Option<bool>, grfkeystate: MODIFIERKEYS_FLAGS) ->
 /// for in-app drags with Shift held, which meant a Shift-drop onto any region without a drop
 /// handler (the preview, a side panel) permanently deleted the dragged files.
 ///
-/// `COPY` unless the last drawn frame positively refused the drop, in which case `NONE`; neither
-/// can cost the source its originals. Note that a hover effect of `NONE` makes OLE skip `Drop`
-/// entirely and call `DragLeave` instead, so dead space cancels the drag outright.
-fn commit_drop_effect(accepted: Option<bool>) -> DROPEFFECT {
-    if accepted == Some(false) {
+/// `COPY` only when the last drawn frame has not refused the drop and the source permits copying;
+/// otherwise `NONE`. Neither can cost the source its originals. Note that a hover effect of `NONE`
+/// makes OLE skip `Drop` entirely and call `DragLeave` instead, so dead space cancels the drag.
+fn commit_drop_effect(accepted: Option<bool>, allowed: DROPEFFECT) -> DROPEFFECT {
+    if accepted == Some(false) || allowed.0 & DROPEFFECT_COPY.0 == 0 {
         DROPEFFECT_NONE
     } else {
         DROPEFFECT_COPY
@@ -1300,7 +1308,7 @@ impl IDropTarget_Impl for WindowsDragDropHandler_Impl {
                 // describes an older one. Clear it so the effect stays optimistic until a frame
                 // reports on *this* drag (see `hover_drop_effect`).
                 self.0.state.drop_target_hovered.set(None);
-                *pdweffect = hover_drop_effect(None, grfkeystate);
+                *pdweffect = hover_drop_effect(None, grfkeystate, *pdweffect);
                 let Some(mut idata) = idata_obj.GetData(&config as _).log_err() else {
                     return Ok(());
                 };
@@ -1348,7 +1356,11 @@ impl IDropTarget_Impl for WindowsDragDropHandler_Impl {
     ) -> windows::core::Result<()> {
         let mut cursor_position = POINT { x: pt.x, y: pt.y };
         unsafe {
-            *pdweffect = hover_drop_effect(self.0.state.drop_target_hovered.get(), grfkeystate);
+            *pdweffect = hover_drop_effect(
+                self.0.state.drop_target_hovered.get(),
+                grfkeystate,
+                *pdweffect,
+            );
             self.0
                 .drop_target_helper
                 .DragOver(&cursor_position, *pdweffect)
@@ -1390,7 +1402,7 @@ impl IDropTarget_Impl for WindowsDragDropHandler_Impl {
         let idata_obj = pdataobj.ok()?;
         let mut cursor_position = POINT { x: pt.x, y: pt.y };
         unsafe {
-            *pdweffect = commit_drop_effect(self.0.state.drop_target_hovered.get());
+            *pdweffect = commit_drop_effect(self.0.state.drop_target_hovered.get(), *pdweffect);
             self.0
                 .drop_target_helper
                 .Drop(idata_obj, &cursor_position, *pdweffect)
@@ -1812,9 +1824,33 @@ fn set_non_rude_hwnd(hwnd: HWND, non_rude: bool) {
 
 #[cfg(test)]
 mod tests {
-    use super::ClickState;
+    use super::{ClickState, commit_drop_effect, hover_drop_effect};
     use gpui::{DevicePixels, MouseButton, point};
     use std::time::Duration;
+    use windows::Win32::System::Ole::{
+        DROPEFFECT, DROPEFFECT_COPY, DROPEFFECT_LINK, DROPEFFECT_MOVE, DROPEFFECT_NONE,
+    };
+    use windows::Win32::System::SystemServices::MK_SHIFT;
+
+    #[test]
+    fn drop_effect_stays_within_source_permissions() {
+        let copy_only = DROPEFFECT(DROPEFFECT_COPY.0 | DROPEFFECT_LINK.0);
+        let copy_or_move = DROPEFFECT(copy_only.0 | DROPEFFECT_MOVE.0);
+        assert_eq!(
+            hover_drop_effect(Some(true), MK_SHIFT, copy_only).0,
+            DROPEFFECT_COPY.0
+        );
+        assert_eq!(
+            hover_drop_effect(Some(true), MK_SHIFT, copy_or_move).0,
+            DROPEFFECT_MOVE.0
+        );
+        assert_eq!(
+            hover_drop_effect(Some(false), MK_SHIFT, copy_only).0,
+            DROPEFFECT_NONE.0
+        );
+        assert_eq!(commit_drop_effect(Some(true), copy_only).0, DROPEFFECT_COPY.0);
+        assert_eq!(commit_drop_effect(Some(true), DROPEFFECT_MOVE).0, DROPEFFECT_NONE.0);
+    }
 
     #[test]
     fn test_double_click_interval() {
