@@ -1462,6 +1462,9 @@ fragment float4 blur_composite_fragment(
   float2 source_size = float2(float(source.get_width()), float(source.get_height()));
   float2 uv = source_position / (params.source_texel_scale * source_size);
   float4 blurred = source.sample(s, uv);
+  // The scene is premultiplied; alpha never legitimately exceeds 1 (the float target does not
+  // clamp for us the way an 8-bit one did).
+  blurred.a = min(blurred.a, 1.0);
   // Backdrop clips to the rounded rect (the panel has a defined shape); content blur bleeds past
   // its bounds like CSS `filter: blur`, so its shape comes from the blurred group's own alpha.
   float dist = quad_sdf(input.position.xy, params.bounds, params.corner_radii);

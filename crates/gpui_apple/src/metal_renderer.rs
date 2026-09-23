@@ -1845,7 +1845,11 @@ fn build_pipeline_state(
     color_attachment.set_source_rgb_blend_factor(metal::MTLBlendFactor::SourceAlpha);
     color_attachment.set_source_alpha_blend_factor(metal::MTLBlendFactor::One);
     color_attachment.set_destination_rgb_blend_factor(metal::MTLBlendFactor::OneMinusSourceAlpha);
-    color_attachment.set_destination_alpha_blend_factor(metal::MTLBlendFactor::One);
+    // Standard "over" for alpha (a = sa + da·(1 − sa)). With `One` the alpha of overlapping
+    // layers simply added up; the 8-bit unorm target clamped that at 1, but the float target keeps
+    // 3, 5, … — and anything that later blends against that alpha (the backdrop-blur composite
+    // multiplies the sampled scene alpha) goes negative and renders as a negative image.
+    color_attachment.set_destination_alpha_blend_factor(metal::MTLBlendFactor::OneMinusSourceAlpha);
 
     device
         .new_render_pipeline_state(&descriptor)
@@ -1879,7 +1883,11 @@ fn build_path_sprite_pipeline_state(
     color_attachment.set_source_rgb_blend_factor(metal::MTLBlendFactor::One);
     color_attachment.set_source_alpha_blend_factor(metal::MTLBlendFactor::One);
     color_attachment.set_destination_rgb_blend_factor(metal::MTLBlendFactor::OneMinusSourceAlpha);
-    color_attachment.set_destination_alpha_blend_factor(metal::MTLBlendFactor::One);
+    // Standard "over" for alpha (a = sa + da·(1 − sa)). With `One` the alpha of overlapping
+    // layers simply added up; the 8-bit unorm target clamped that at 1, but the float target keeps
+    // 3, 5, … — and anything that later blends against that alpha (the backdrop-blur composite
+    // multiplies the sampled scene alpha) goes negative and renders as a negative image.
+    color_attachment.set_destination_alpha_blend_factor(metal::MTLBlendFactor::OneMinusSourceAlpha);
 
     device
         .new_render_pipeline_state(&descriptor)
