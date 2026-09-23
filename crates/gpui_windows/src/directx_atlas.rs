@@ -30,6 +30,9 @@ struct DirectXAtlasTextures {
     monochrome_textures: AtlasTextureList<DirectXAtlasTexture>,
     polychrome_textures: AtlasTextureList<DirectXAtlasTexture>,
     subpixel_textures: AtlasTextureList<DirectXAtlasTexture>,
+    /// HDR 이미지용 RGBA16F 텍스처 (`AtlasTextureKind::PolychromeHdr`). 8비트 아틀라스와 섞이지 않게
+    /// 따로 둔다. Windows 렌더타깃은 아직 8비트라 값이 1.0 에서 잘려 SDR 로 보인다 — 업로드·표시는 된다.
+    polychrome_hdr_textures: AtlasTextureList<DirectXAtlasTexture>,
 }
 
 struct DirectXAtlasTexture {
@@ -52,6 +55,7 @@ impl DirectXAtlas {
             monochrome_textures: Default::default(),
             polychrome_textures: Default::default(),
             subpixel_textures: Default::default(),
+            polychrome_hdr_textures: Default::default(),
         })))
     }
 
@@ -128,6 +132,7 @@ impl AtlasBackend for DirectXAtlasTextures {
             AtlasTextureKind::Monochrome => &mut self.monochrome_textures,
             AtlasTextureKind::Polychrome => &mut self.polychrome_textures,
             AtlasTextureKind::Subpixel => &mut self.subpixel_textures,
+            AtlasTextureKind::PolychromeHdr => &mut self.polychrome_hdr_textures,
         };
 
         let Some(texture_slot) = textures.textures.get_mut(id.index as usize) else {
@@ -161,6 +166,7 @@ impl DirectXAtlasTextures {
                 AtlasTextureKind::Monochrome => &mut self.monochrome_textures,
                 AtlasTextureKind::Polychrome => &mut self.polychrome_textures,
                 AtlasTextureKind::Subpixel => &mut self.subpixel_textures,
+                AtlasTextureKind::PolychromeHdr => &mut self.polychrome_hdr_textures,
             };
 
             if let Some(tile) = textures
@@ -219,6 +225,11 @@ impl DirectXAtlasTextures {
                 bind_flag = D3D11_BIND_SHADER_RESOURCE;
                 bytes_per_pixel = 4;
             }
+            AtlasTextureKind::PolychromeHdr => {
+                pixel_format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+                bind_flag = D3D11_BIND_SHADER_RESOURCE;
+                bytes_per_pixel = 8;
+            }
         }
         // 밉맵이면 전체 밉 체인(MipLevels=0) + 렌더타깃 바인드 + GENERATE_MIPS 플래그로 만들고
         // (`GenerateMips` 요구사항), 업로드 후 GPU 로 하위 밉을 채운다. 아니면 단일 밉(기존).
@@ -260,6 +271,7 @@ impl DirectXAtlasTextures {
             AtlasTextureKind::Monochrome => &mut self.monochrome_textures,
             AtlasTextureKind::Polychrome => &mut self.polychrome_textures,
             AtlasTextureKind::Subpixel => &mut self.subpixel_textures,
+            AtlasTextureKind::PolychromeHdr => &mut self.polychrome_hdr_textures,
         };
         let index = texture_list.free_list.pop();
         let view = unsafe {
@@ -301,6 +313,9 @@ impl DirectXAtlasTextures {
             AtlasTextureKind::Subpixel => {
                 &self.subpixel_textures[id.index as usize].as_ref().unwrap()
             }
+            AtlasTextureKind::PolychromeHdr => &self.polychrome_hdr_textures[id.index as usize]
+                .as_ref()
+                .unwrap(),
         }
     }
 }
@@ -431,6 +446,7 @@ mod tests {
         AtlasKey::Image(RenderImageParams {
             image_id: ImageId(image_id),
             frame_index: 0,
+            hdr: false,
         })
     }
 

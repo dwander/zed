@@ -37,6 +37,9 @@ pub struct ImageId(pub usize);
 pub struct RenderImageParams {
     pub image_id: ImageId,
     pub frame_index: usize,
+    /// Whether the frame is HDR (half-float) — selects the float atlas texture kind. Part of
+    /// the key so an HDR image and an SDR image never share a tile.
+    pub hdr: bool,
 }
 
 /// A cached and processed image, in BGRA format
@@ -46,6 +49,17 @@ pub struct RenderImage {
     /// The scale factor of this image on render.
     pub(crate) scale_factor: f32,
     data: SmallVec<[Frame; 1]>,
+    /// A single high-dynamic-range frame (RGBA, 16-bit float per channel, extended sRGB
+    /// encoding — values above 1.0 are brighter than SDR white). When present it replaces
+    /// `data` for rendering and is uploaded into a float atlas texture, so the values survive
+    /// to the (float) render target and show as EDR content on displays with headroom.
+    hdr: Option<HdrFrame>,
+}
+
+/// Pixels of an HDR [`RenderImage`]: RGBA half floats, 8 bytes per pixel, row-major, no padding.
+struct HdrFrame {
+    size: Size<DevicePixels>,
+    bytes: Vec<u8>,
 }
 
 impl PartialEq for RenderImage {
@@ -65,11 +79,36 @@ impl RenderImage {
             id: ImageId(NEXT_ID.fetch_add(1, SeqCst)),
             scale_factor: 1.0,
             data: data.into(),
+            hdr: None,
         }
+    }
+
+    /// Create a single-frame HDR image from RGBA half-float pixels (8 bytes per pixel,
+    /// extended sRGB encoding, premultiplied alpha). `bytes.len()` must equal
+    /// `width * height * 8`; anything else is treated as an empty image.
+    pub fn new_hdr(size: Size<DevicePixels>, bytes: Vec<u8>) -> Self {
+        static NEXT_ID: AtomicUsize = AtomicUsize::new(usize::MAX / 2);
+
+        let expected = (size.width.0.max(0) as usize) * (size.height.0.max(0) as usize) * 8;
+        let hdr = (expected > 0 && bytes.len() == expected).then_some(HdrFrame { size, bytes });
+        Self {
+            id: ImageId(NEXT_ID.fetch_add(1, SeqCst)),
+            scale_factor: 1.0,
+            data: SmallVec::new(),
+            hdr,
+        }
+    }
+
+    /// Whether this image carries HDR (half-float) pixels rather than 8-bit BGRA frames.
+    pub fn is_hdr(&self) -> bool {
+        self.hdr.is_some()
     }
 
     /// Convert this image into a byte slice.
     pub fn as_bytes(&self, frame_index: usize) -> Option<&[u8]> {
+        if let Some(hdr) = &self.hdr {
+            return (frame_index == 0).then_some(hdr.bytes.as_slice());
+        }
         self.data
             .get(frame_index)
             .map(|frame| frame.buffer().as_raw().as_slice())
@@ -77,6 +116,9 @@ impl RenderImage {
 
     /// Get the size of this image, in pixels.
     pub fn size(&self, frame_index: usize) -> Size<DevicePixels> {
+        if let Some(hdr) = &self.hdr {
+            return if frame_index == 0 { hdr.size } else { Size::default() };
+        }
         self.data
             .get(frame_index)
             .map(|frame| {
@@ -102,6 +144,9 @@ impl RenderImage {
 
     /// Get the number of frames for this image.
     pub fn frame_count(&self) -> usize {
+        if self.hdr.is_some() {
+            return 1;
+        }
         self.data.len()
     }
 }
@@ -111,6 +156,7 @@ impl fmt::Debug for RenderImage {
         f.debug_struct("ImageData")
             .field("id", &self.id)
             .field("size", &self.data.first().map(|f| f.buffer().dimensions()))
+            .field("hdr", &self.hdr.as_ref().map(|h| h.size))
             .finish()
     }
 }

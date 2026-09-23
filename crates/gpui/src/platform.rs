@@ -959,6 +959,9 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     fn background_appearance(&self) -> WindowBackgroundAppearance;
     fn set_title(&mut self, title: &str);
     fn set_background_appearance(&self, background_appearance: WindowBackgroundAppearance);
+    /// Present values above 1.0 as HDR (macOS EDR); `headroom` is the display's current EDR
+    /// headroom that HDR sprites are compressed into. Platforms without HDR output ignore it.
+    fn set_hdr_content(&self, _enabled: bool, _headroom: f32) {}
     fn minimize(&self);
     fn zoom(&self);
     fn toggle_fullscreen(&self);
@@ -1441,7 +1444,13 @@ impl AtlasKey {
                 }
             }
             AtlasKey::Svg(_) => AtlasTextureKind::Monochrome,
-            AtlasKey::Image(_) => AtlasTextureKind::Polychrome,
+            AtlasKey::Image(params) => {
+                if params.hdr {
+                    AtlasTextureKind::PolychromeHdr
+                } else {
+                    AtlasTextureKind::Polychrome
+                }
+            }
         }
     }
 }
@@ -1685,6 +1694,9 @@ pub enum AtlasTextureKind {
     Monochrome = 0,
     Polychrome = 1,
     Subpixel = 2,
+    /// RGBA 16-bit float textures for HDR images (see `RenderImage::new_hdr`). Kept apart from
+    /// `Polychrome` so an HDR tile never lands in an 8-bit atlas texture.
+    PolychromeHdr = 3,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -3267,6 +3279,7 @@ mod atlas_tests {
         AtlasKey::Image(RenderImageParams {
             image_id: crate::ImageId(image_id),
             frame_index: 0,
+            hdr: false,
         })
     }
 

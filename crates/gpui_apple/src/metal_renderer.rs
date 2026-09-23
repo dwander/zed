@@ -12,6 +12,13 @@ use gpui::{
     size,
 };
 
+/// Pixel format of every colour render target (drawable, offscreen scene/group/blur targets,
+/// path intermediate). Half float so values above 1.0 written by HDR sprites survive to the
+/// drawable and can be presented as EDR (see [`MetalRenderer::set_wants_hdr`]). Blending and
+/// the shaders are unchanged: they keep working in the same (non-linear) encoding as the 8-bit
+/// target did, only with more range and precision.
+const RENDER_TARGET_FORMAT: MTLPixelFormat = MTLPixelFormat::RGBA16Float;
+
 /// The largest blur radius in a scene-space filter chain, in device pixels — used to size the
 /// blur kernel and the dilated region the blur passes are scissored to.
 ///
@@ -182,6 +189,8 @@ pub struct MetalRenderer {
     scene_color_texture: Option<metal::Texture>,
     blur_ping_texture: Option<metal::Texture>,
     blur_pong_texture: Option<metal::Texture>,
+    /// Current EDR headroom the HDR sprite shader compresses into (see [`HdrParams`]).
+    hdr_headroom: f32,
     /// Full-resolution offscreen targets a content-filter (`filter`) group renders into before
     /// being blurred and composited back. One per nesting level (indexed by isolation depth) so
     /// nested content blurs isolate correctly, up to [`MAX_FILTER_DEPTH`]; deeper nests render
@@ -268,7 +277,17 @@ impl MetalRenderer {
 
         let layer = metal::MetalLayer::new();
         layer.set_device(&device);
-        layer.set_pixel_format(MTLPixelFormat::BGRA8Unorm);
+        layer.set_pixel_format(RENDER_TARGET_FORMAT);
+        // A float layer with no colorspace is composited as *linear* — every sRGB-encoded value the
+        // shaders write would be shown washed out. Extended sRGB keeps 0..1 exactly as the 8-bit
+        // (sRGB) layer showed them and lets values above 1.0 through as EDR.
+        unsafe {
+            let colorspace = crate::cg_colorspace::extended_srgb();
+            if !colorspace.is_null() {
+                let _: () = msg_send![&*layer, setColorspace: colorspace];
+                crate::cg_colorspace::release(colorspace);
+            }
+        }
         // Support direct-to-display rendering if the window is not transparent
         // https://developer.apple.com/documentation/metal/managing-your-game-window-for-metal-in-macos
         layer.set_opaque(!transparent);
@@ -377,7 +396,7 @@ impl MetalRenderer {
             "paths_rasterization",
             "path_rasterization_vertex",
             "path_rasterization_fragment",
-            MTLPixelFormat::BGRA8Unorm,
+            RENDER_TARGET_FORMAT,
             PATH_SAMPLE_COUNT,
         );
         let path_sprites_pipeline_state = build_path_sprite_pipeline_state(
@@ -386,7 +405,7 @@ impl MetalRenderer {
             "path_sprites",
             "path_sprite_vertex",
             "path_sprite_fragment",
-            MTLPixelFormat::BGRA8Unorm,
+            RENDER_TARGET_FORMAT,
         );
         let shadows_pipeline_state = build_pipeline_state(
             &device,
@@ -394,7 +413,7 @@ impl MetalRenderer {
             "shadows",
             "shadow_vertex",
             "shadow_fragment",
-            MTLPixelFormat::BGRA8Unorm,
+            RENDER_TARGET_FORMAT,
         );
         let quads_pipeline_state = build_pipeline_state(
             &device,
@@ -402,7 +421,7 @@ impl MetalRenderer {
             "quads",
             "quad_vertex",
             "quad_fragment",
-            MTLPixelFormat::BGRA8Unorm,
+            RENDER_TARGET_FORMAT,
         );
         let underlines_pipeline_state = build_pipeline_state(
             &device,
@@ -410,7 +429,7 @@ impl MetalRenderer {
             "underlines",
             "underline_vertex",
             "underline_fragment",
-            MTLPixelFormat::BGRA8Unorm,
+            RENDER_TARGET_FORMAT,
         );
         let monochrome_sprites_pipeline_state = build_pipeline_state(
             &device,
@@ -418,7 +437,7 @@ impl MetalRenderer {
             "monochrome_sprites",
             "monochrome_sprite_vertex",
             "monochrome_sprite_fragment",
-            MTLPixelFormat::BGRA8Unorm,
+            RENDER_TARGET_FORMAT,
         );
         let polychrome_sprites_pipeline_state = build_pipeline_state(
             &device,
@@ -426,7 +445,7 @@ impl MetalRenderer {
             "polychrome_sprites",
             "polychrome_sprite_vertex",
             "polychrome_sprite_fragment",
-            MTLPixelFormat::BGRA8Unorm,
+            RENDER_TARGET_FORMAT,
         );
         let surfaces_pipeline_state = build_pipeline_state(
             &device,
@@ -434,7 +453,7 @@ impl MetalRenderer {
             "surfaces",
             "surface_vertex",
             "surface_fragment",
-            MTLPixelFormat::BGRA8Unorm,
+            RENDER_TARGET_FORMAT,
         );
         let blur_downsample_pipeline_state = build_blur_pipeline_state(
             &device,
@@ -442,7 +461,7 @@ impl MetalRenderer {
             "blur_downsample",
             "blur_fullscreen_vertex",
             "blur_downsample_fragment",
-            MTLPixelFormat::BGRA8Unorm,
+            RENDER_TARGET_FORMAT,
         );
         let blur_pipeline_state = build_blur_pipeline_state(
             &device,
@@ -450,7 +469,7 @@ impl MetalRenderer {
             "blur",
             "blur_fullscreen_vertex",
             "blur_fragment",
-            MTLPixelFormat::BGRA8Unorm,
+            RENDER_TARGET_FORMAT,
         );
         // Premultiplied blend (One / OneMinusSourceAlpha) — the composite outputs a premultiplied
         // blurred sample; straight-alpha blending would darken the faded edges.
@@ -460,7 +479,7 @@ impl MetalRenderer {
             "blur_composite",
             "blur_composite_vertex",
             "blur_composite_fragment",
-            MTLPixelFormat::BGRA8Unorm,
+            RENDER_TARGET_FORMAT,
         );
 
         let command_queue = device.new_command_queue();
@@ -496,6 +515,7 @@ impl MetalRenderer {
             scene_color_texture: None,
             blur_ping_texture: None,
             blur_pong_texture: None,
+            hdr_headroom: 1.0,
             group_textures: Vec::new(),
             path_sample_count: PATH_SAMPLE_COUNT,
             #[cfg(any(test, feature = "bench-support", feature = "test-support"))]
@@ -558,7 +578,7 @@ impl MetalRenderer {
         let texture_descriptor = metal::TextureDescriptor::new();
         texture_descriptor.set_width(size.width.0 as u64);
         texture_descriptor.set_height(size.height.0 as u64);
-        texture_descriptor.set_pixel_format(metal::MTLPixelFormat::BGRA8Unorm);
+        texture_descriptor.set_pixel_format(RENDER_TARGET_FORMAT);
         texture_descriptor.set_storage_mode(metal::MTLStorageMode::Private);
         texture_descriptor
             .set_usage(metal::MTLTextureUsage::RenderTarget | metal::MTLTextureUsage::ShaderRead);
@@ -569,7 +589,7 @@ impl MetalRenderer {
             let descriptor = metal::TextureDescriptor::new();
             descriptor.set_width(width.max(1));
             descriptor.set_height(height.max(1));
-            descriptor.set_pixel_format(metal::MTLPixelFormat::BGRA8Unorm);
+            descriptor.set_pixel_format(RENDER_TARGET_FORMAT);
             descriptor.set_storage_mode(metal::MTLStorageMode::Private);
             descriptor.set_usage(
                 metal::MTLTextureUsage::RenderTarget | metal::MTLTextureUsage::ShaderRead,
@@ -608,6 +628,18 @@ impl MetalRenderer {
         self.opaque = !transparent;
         if let Some(layer) = &self.layer {
             layer.set_opaque(!transparent);
+        }
+    }
+
+    /// Let the layer present values above 1.0 as extended-dynamic-range content. Off by default
+    /// so an SDR-only window never asks the display to enter EDR mode.
+    ///
+    /// `headroom` is the display's current EDR headroom (multiples of SDR white); HDR sprites are
+    /// soft-clipped into it every frame ([`HdrParams`]).
+    pub fn set_wants_hdr(&mut self, enabled: bool, headroom: f32) {
+        self.hdr_headroom = headroom.max(1.0);
+        if let Some(layer) = &self.layer {
+            layer.set_wants_extended_dynamic_range_content(enabled);
         }
     }
 
@@ -756,7 +788,7 @@ impl MetalRenderer {
             let texture_descriptor = metal::TextureDescriptor::new();
             texture_descriptor.set_width(size.width.0 as u64);
             texture_descriptor.set_height(size.height.0 as u64);
-            texture_descriptor.set_pixel_format(MTLPixelFormat::BGRA8Unorm);
+            texture_descriptor.set_pixel_format(RENDER_TARGET_FORMAT);
             texture_descriptor.set_usage(
                 metal::MTLTextureUsage::RenderTarget | metal::MTLTextureUsage::ShaderRead,
             );
@@ -805,7 +837,7 @@ impl MetalRenderer {
                 let texture_descriptor = metal::TextureDescriptor::new();
                 texture_descriptor.set_width(size.width.0 as u64);
                 texture_descriptor.set_height(size.height.0 as u64);
-                texture_descriptor.set_pixel_format(MTLPixelFormat::BGRA8Unorm);
+                texture_descriptor.set_pixel_format(RENDER_TARGET_FORMAT);
                 texture_descriptor.set_usage(
                     metal::MTLTextureUsage::RenderTarget | metal::MTLTextureUsage::ShaderRead,
                 );
@@ -1581,6 +1613,15 @@ impl MetalRenderer {
             instance_bindings.polychrome_sprites.offset as u64,
         );
         command_encoder.set_fragment_texture(SpriteInputIndex::AtlasTexture as u64, Some(&texture));
+        let hdr_params = HdrParams {
+            headroom: self.hdr_headroom,
+            is_hdr: if texture_id.kind == gpui::AtlasTextureKind::PolychromeHdr { 1.0 } else { 0.0 },
+        };
+        command_encoder.set_fragment_bytes(
+            SpriteInputIndex::HdrParams as u64,
+            mem::size_of_val(&hdr_params) as u64,
+            &hdr_params as *const HdrParams as *const _,
+        );
 
         command_encoder.draw_primitives_instanced_base_instance(
             metal::MTLPrimitiveType::Triangle,
@@ -1716,7 +1757,9 @@ fn new_command_encoder_for_texture<'a>(
 fn read_texture_to_image(texture: &metal::TextureRef) -> Result<RgbaImage> {
     let width = texture.width() as u32;
     let height = texture.height() as u32;
-    let bytes_per_row = width as usize * 4;
+    let half_float = texture.pixel_format() == MTLPixelFormat::RGBA16Float;
+    let bytes_per_pixel = if half_float { 8 } else { 4 };
+    let bytes_per_row = width as usize * bytes_per_pixel;
     let mut pixels = vec![0u8; height as usize * bytes_per_row];
 
     let region = metal::MTLRegion {
@@ -1734,12 +1777,45 @@ fn read_texture_to_image(texture: &metal::TextureRef) -> Result<RgbaImage> {
         0,
     );
 
+    if half_float {
+        // RGBA16Float → RGBA8: decode each half, clamp to SDR range and quantise.
+        let pixels = pixels
+            .chunks_exact(2)
+            .map(|h| {
+                let v = half_to_f32(u16::from_le_bytes([h[0], h[1]]));
+                (v.clamp(0.0, 1.0) * 255.0).round() as u8
+            })
+            .collect();
+        return RgbaImage::from_raw(width, height, pixels)
+            .context("failed to create RgbaImage from pixel data");
+    }
+
     // Convert BGRA to RGBA (swap B and R channels)
     for chunk in pixels.chunks_exact_mut(4) {
         chunk.swap(0, 2);
     }
 
     RgbaImage::from_raw(width, height, pixels).context("failed to create RgbaImage from pixel data")
+}
+
+/// IEEE 754 binary16 → f32 (no `half` dependency; test read-back only).
+#[cfg(any(test, feature = "bench-support", feature = "test-support"))]
+fn half_to_f32(bits: u16) -> f32 {
+    let sign = ((bits >> 15) & 1) as u32;
+    let exp = ((bits >> 10) & 0x1f) as u32;
+    let frac = (bits & 0x3ff) as u32;
+    let f = match exp {
+        0 => (frac as f32) * 2f32.powi(-24),
+        0x1f => {
+            if frac == 0 {
+                f32::INFINITY
+            } else {
+                f32::NAN
+            }
+        }
+        _ => (1.0 + frac as f32 / 1024.0) * 2f32.powi(exp as i32 - 15),
+    };
+    if sign == 1 { -f } else { f }
 }
 
 fn build_pipeline_state(
@@ -2067,6 +2143,19 @@ enum SpriteInputIndex {
     ViewportSize = 2,
     AtlasTextureSize = 3,
     AtlasTexture = 4,
+    HdrParams = 5,
+}
+
+/// Per-draw HDR parameters for polychrome sprites (fragment stage). Mirrors `HdrParams` in the
+/// shader. `is_hdr` is 1.0 when the batch samples an `AtlasTextureKind::PolychromeHdr` texture:
+/// the shader then soft-clips values above `headroom` (the display's *current* EDR headroom, in
+/// multiples of SDR white) so highlights roll off instead of being clipped by the compositor.
+/// Decoding once for the display's potential headroom and compressing per frame here is what
+/// keeps brightness changes flicker-free — no re-decode is needed when the headroom moves.
+#[repr(C)]
+pub struct HdrParams {
+    pub headroom: f32,
+    pub is_hdr: f32,
 }
 
 #[repr(C)]

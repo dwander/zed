@@ -2925,6 +2925,16 @@ impl Window {
             .set_background_appearance(background_appearance);
     }
 
+    /// Asks the platform to present pixel values above 1.0 as high-dynamic-range content
+    /// (macOS EDR). Call with `true` while an HDR image (`RenderImage::new_hdr`) is on screen and
+    /// `false` otherwise, so the display only enters extended range when there is something to
+    /// show. `headroom` is the display's current EDR headroom (multiples of SDR white): HDR
+    /// images are soft-clipped into it each frame, so pass the live value whenever it changes.
+    /// A no-op on platforms without HDR presentation.
+    pub fn set_hdr_content(&self, enabled: bool, headroom: f32) {
+        self.platform_window.set_hdr_content(enabled, headroom);
+    }
+
     /// Mark the window as dirty at the platform level.
     pub fn set_window_edited(&mut self, edited: bool) {
         self.platform_window.set_edited(edited);
@@ -5087,6 +5097,7 @@ impl Window {
         let params = RenderImageParams {
             image_id: data.id,
             frame_index,
+            hdr: data.is_hdr(),
         };
 
         let tile = self
@@ -5189,6 +5200,7 @@ impl Window {
             let params = RenderImageParams {
                 image_id: data.id,
                 frame_index,
+                hdr: data.is_hdr(),
             };
 
             self.sprite_atlas.remove(&params.clone().into());
@@ -5206,6 +5218,7 @@ impl Window {
                     &RenderImageParams {
                         image_id: data.id,
                         frame_index,
+                        hdr: data.is_hdr(),
                     }
                     .into(),
                 )

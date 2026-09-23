@@ -665,6 +665,10 @@ struct MacWindowState {
     native_view: NonNull<Object>,
     blurred_view: Option<id>,
     background_appearance: WindowBackgroundAppearance,
+    /// Whether the layer currently presents EDR content (`set_hdr_content`); deduplicates calls.
+    hdr_content: bool,
+    /// Headroom last handed to the renderer (`set_hdr_content`); deduplicates calls.
+    hdr_headroom: f32,
     cursor_style: CursorStyle,
     cursor_visible: Arc<AtomicBool>,
     frame_source: Option<WindowFrameSource>,
@@ -1117,6 +1121,8 @@ impl MacWindow {
                 native_view: NonNull::new_unchecked(native_view),
                 blurred_view: None,
                 background_appearance: WindowBackgroundAppearance::Opaque,
+                hdr_content: false,
+                hdr_headroom: 1.0,
                 cursor_style: CursorStyle::Arrow,
                 cursor_visible,
                 frame_source: None,
@@ -1922,6 +1928,16 @@ impl PlatformWindow for MacWindow {
     }
 
     fn set_app_id(&mut self, _app_id: &str) {}
+
+    fn set_hdr_content(&self, enabled: bool, headroom: f32) {
+        let mut this = self.0.as_ref().lock();
+        if this.hdr_content == enabled && this.hdr_headroom == headroom {
+            return;
+        }
+        this.hdr_content = enabled;
+        this.hdr_headroom = headroom;
+        this.renderer.set_wants_hdr(enabled, headroom);
+    }
 
     fn set_background_appearance(&self, background_appearance: WindowBackgroundAppearance) {
         let mut this = self.0.as_ref().lock();

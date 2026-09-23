@@ -18,6 +18,7 @@ impl MetalAtlas {
             is_apple_gpu,
             monochrome_textures: Default::default(),
             polychrome_textures: Default::default(),
+            polychrome_hdr_textures: Default::default(),
         })))
     }
 
@@ -31,6 +32,7 @@ struct MetalAtlasTextures {
     is_apple_gpu: bool,
     monochrome_textures: AtlasTextureList<MetalAtlasTexture>,
     polychrome_textures: AtlasTextureList<MetalAtlasTexture>,
+    polychrome_hdr_textures: AtlasTextureList<MetalAtlasTexture>,
 }
 
 impl PlatformAtlas for MetalAtlas {
@@ -66,6 +68,7 @@ impl AtlasBackend for MetalAtlasTextures {
         let textures = match id.kind {
             AtlasTextureKind::Monochrome => &mut self.monochrome_textures,
             AtlasTextureKind::Polychrome => &mut self.polychrome_textures,
+            AtlasTextureKind::PolychromeHdr => &mut self.polychrome_hdr_textures,
             AtlasTextureKind::Subpixel => unreachable!(),
         };
 
@@ -99,6 +102,7 @@ impl MetalAtlasTextures {
             let textures = match texture_kind {
                 AtlasTextureKind::Monochrome => &mut self.monochrome_textures,
                 AtlasTextureKind::Polychrome => &mut self.polychrome_textures,
+                AtlasTextureKind::PolychromeHdr => &mut self.polychrome_hdr_textures,
                 AtlasTextureKind::Subpixel => unreachable!(),
             };
 
@@ -144,6 +148,10 @@ impl MetalAtlasTextures {
                 pixel_format = metal::MTLPixelFormat::BGRA8Unorm;
                 usage = metal::MTLTextureUsage::ShaderRead;
             }
+            AtlasTextureKind::PolychromeHdr => {
+                pixel_format = metal::MTLPixelFormat::RGBA16Float;
+                usage = metal::MTLTextureUsage::ShaderRead;
+            }
             AtlasTextureKind::Subpixel => unreachable!(),
         }
         texture_descriptor.set_pixel_format(pixel_format);
@@ -160,6 +168,7 @@ impl MetalAtlasTextures {
         let texture_list = match kind {
             AtlasTextureKind::Monochrome => &mut self.monochrome_textures,
             AtlasTextureKind::Polychrome => &mut self.polychrome_textures,
+            AtlasTextureKind::PolychromeHdr => &mut self.polychrome_hdr_textures,
             AtlasTextureKind::Subpixel => unreachable!(),
         };
 
@@ -191,6 +200,7 @@ impl MetalAtlasTextures {
         let textures = match id.kind {
             AtlasTextureKind::Monochrome => &self.monochrome_textures,
             AtlasTextureKind::Polychrome => &self.polychrome_textures,
+            AtlasTextureKind::PolychromeHdr => &self.polychrome_hdr_textures,
             AtlasTextureKind::Subpixel => unreachable!(),
         };
         textures[id.index as usize].as_ref().unwrap()
@@ -240,6 +250,7 @@ impl MetalAtlasTexture {
         match self.metal_texture.pixel_format() {
             A8Unorm | R8Unorm => 1,
             RGBA8Unorm | BGRA8Unorm => 4,
+            RGBA16Float => 8,
             _ => unimplemented!(),
         }
     }
@@ -284,6 +295,7 @@ mod tests {
         AtlasKey::Image(gpui::RenderImageParams {
             image_id: gpui::ImageId(image_id),
             frame_index,
+            hdr: false,
         })
     }
 

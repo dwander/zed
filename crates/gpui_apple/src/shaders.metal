@@ -723,10 +723,44 @@ vertex PolychromeSpriteVertexOutput polychrome_sprite_vertex(
       {clip_distance.x, clip_distance.y, clip_distance.z, clip_distance.w}};
 }
 
+// Extended sRGB transfer (exact piecewise curve, continued above 1.0, sign-symmetric) — the
+// pow(2.2) helpers above are only an SDR approximation.
+float3 extended_srgb_to_linear(float3 v) {
+  float3 a = abs(v);
+  float3 l = select(pow((a + 0.055) / 1.055, 2.4), a / 12.92, a <= 0.04045);
+  return copysign(l, v);
+}
+
+float3 linear_to_extended_srgb(float3 l) {
+  float3 a = abs(l);
+  float3 v = select(1.055 * pow(a, 1.0 / 2.4) - 0.055, a * 12.92, a <= 0.0031308);
+  return copysign(v, l);
+}
+
+// Soft-clip an HDR (extended sRGB) colour into the display's current EDR headroom. Core
+// Graphics' tone mapping overshoots its target and the compositor hard-clips anything above the
+// headroom, flattening snow and clouds; from 80% of the headroom up we roll off with an
+// exponential knee that approaches the headroom asymptotically. Scaled by the max channel so
+// hue is preserved. Headroom 1.0 (no EDR) compresses everything into SDR.
+constant float HDR_SOFT_KNEE_START = 0.8;
+
+float3 compress_to_headroom(float3 rgb, float headroom) {
+  float knee = headroom * HDR_SOFT_KNEE_START;
+  float range = headroom - knee;
+  float3 lin = extended_srgb_to_linear(rgb);
+  float m = max(lin.r, max(lin.g, lin.b));
+  if (m <= knee || range <= 0.0) {
+    return rgb;
+  }
+  float squashed = knee + range * (1.0 - exp(-(m - knee) / range));
+  return linear_to_extended_srgb(lin * (squashed / m));
+}
+
 fragment float4 polychrome_sprite_fragment(
     PolychromeSpriteFragmentInput input [[stage_in]],
     constant PolychromeSprite *sprites [[buffer(SpriteInputIndex_Sprites)]],
-    texture2d<float> atlas_texture [[texture(SpriteInputIndex_AtlasTexture)]]) {
+    texture2d<float> atlas_texture [[texture(SpriteInputIndex_AtlasTexture)]],
+    constant HdrParams &hdr [[buffer(SpriteInputIndex_HdrParams)]]) {
   PolychromeSprite sprite = sprites[input.sprite_id];
   constexpr sampler atlas_texture_sampler(mag_filter::linear,
                                           min_filter::linear);
@@ -736,6 +770,9 @@ fragment float4 polychrome_sprite_fragment(
       quad_sdf(input.local_position, sprite.bounds, sprite.corner_radii);
 
   float4 color = sample;
+  if (hdr.is_hdr > 0.5) {
+    color.rgb = compress_to_headroom(color.rgb, hdr.headroom);
+  }
   if (sprite.grayscale) {
     float grayscale = 0.2126 * color.r + 0.7152 * color.g + 0.0722 * color.b;
     color.r = grayscale;
