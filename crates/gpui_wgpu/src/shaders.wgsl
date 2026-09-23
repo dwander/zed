@@ -98,6 +98,9 @@ struct GammaParams {
 
 const M_PI_F: f32 = 3.1415926;
 const GRAYSCALE_FACTORS: vec3<f32> = vec3<f32>(0.2126, 0.7152, 0.0722);
+// Texels per device pixel at or below which a pixelated sprite switches to nearest sampling.
+// 1.0 is exactly 1:1; the slack keeps float/bounds-snapping error from reading 100% as minified.
+const PIXELATED_MAX_TEXELS_PER_PIXEL: f32 = 1.005;
 
 struct Bounds {
     origin: vec2<f32>,
@@ -1265,7 +1268,7 @@ fn fs_mono_sprite(input: MonoSpriteVarying) -> @location(0) vec4<f32> {
 
 struct PolychromeSprite {
     order: u32,
-    pad: u32,
+    pixelated: u32,
     grayscale: u32,
     opacity: f32,
     bounds: Bounds,
@@ -1302,13 +1305,24 @@ fn vs_poly_sprite(@builtin(vertex_index) vertex_id: u32, @builtin(instance_index
 
 @fragment
 fn fs_poly_sprite(input: PolySpriteVarying) -> @location(0) vec4<f32> {
-    let sample = textureSample(t_sprite, s_sprite, input.tile_position);
+    var sample = textureSample(t_sprite, s_sprite, input.tile_position);
+    let atlas_size = vec2<f32>(textureDimensions(t_sprite, 0));
+    let texel_pos = input.tile_position * atlas_size;
+    let texels_per_pixel = max(length(dpdx(texel_pos)), length(dpdy(texel_pos)));
     // Alpha clip after using the derivatives.
     if (any(input.clip_distances < vec4<f32>(0.0))) {
         return vec4<f32>(0.0);
     }
 
     let sprite = load_poly_sprite(input.sprite_id);
+    // Pixelated: while magnified, take the nearest texel as-is instead of interpolating.
+    // Minified sprites keep the filtered sample above.
+    if (sprite.pixelated != 0u && texels_per_pixel <= PIXELATED_MAX_TEXELS_PER_PIXEL) {
+        let tile_min = vec2<f32>(sprite.tile.bounds.origin) + 0.5;
+        let tile_max = vec2<f32>(sprite.tile.bounds.origin + sprite.tile.bounds.size) - 0.5;
+        let nearest = clamp(floor(texel_pos) + 0.5, tile_min, tile_max) / atlas_size;
+        sample = textureSampleLevel(t_sprite, s_sprite, nearest, 0.0);
+    }
     let distance = quad_sdf(input.local_position, sprite.bounds, sprite.corner_radii);
 
     var color = sample;

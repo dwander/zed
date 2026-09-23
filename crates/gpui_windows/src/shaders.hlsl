@@ -97,6 +97,9 @@ struct TransformationMatrix {
 
 static const float M_PI_F = 3.141592653f;
 static const float3 GRAYSCALE_FACTORS = float3(0.2126f, 0.7152f, 0.0722f);
+// pixelated 스프라이트가 최근접 샘플링으로 넘어가는 문턱 — 화면 픽셀당 텍셀 수. 1.0 이 정확히 100%
+// 인데, 부동소수·bounds 스냅 반올림 오차로 100% 가 살짝 축소로 읽히지 않게 0.5% 여유를 둔다.
+static const float PIXELATED_MAX_TEXELS_PER_PIXEL = 1.005f;
 
 float4 to_device_position_impl(float2 position) {
     float2 device_position = position / global_viewport_size * float2(2.0, -2.0) + float2(-1.0, 1.0);
@@ -1221,7 +1224,7 @@ SubpixelSpriteFragmentOutput subpixel_sprite_fragment(MonochromeSpriteFragmentIn
 
 struct PolychromeSprite {
     uint order;
-    uint pad;
+    uint pixelated;
     uint grayscale;
     float opacity;
     Bounds bounds;
@@ -1282,6 +1285,16 @@ float4 polychrome_sprite_fragment(PolychromeSpriteFragmentInput input): SV_Targe
     float2 clamped_uv = clamp(input.tile_position, tile_min, tile_max);
 
     float4 sample = t_sprite.Sample(s_sprite, clamped_uv);
+
+    // pixelated — 확대(텍셀 하나가 화면 픽셀 하나 이상을 덮음) 중에는 보간 없이 가장 가까운 텍셀을
+    // 그대로 쓴다. 축소는 위의 선형+밉맵 그대로다. 미분은 분기 **밖**에서 구해야 한다.
+    float2 texel_pos = input.tile_position * atlas_size;
+    float texels_per_pixel = max(length(ddx(texel_pos)), length(ddy(texel_pos)));
+    if (sprite.pixelated != 0u && texels_per_pixel <= PIXELATED_MAX_TEXELS_PER_PIXEL) {
+        float2 nearest_uv = clamp((floor(texel_pos) + 0.5) / atlas_size, tile_min, tile_max);
+        sample = t_sprite.SampleLevel(s_sprite, nearest_uv, 0);
+    }
+
     float distance = quad_sdf(input.local_position, sprite.bounds, sprite.corner_radii);
 
     float4 color = sample;

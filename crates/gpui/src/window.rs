@@ -4981,7 +4981,7 @@ impl Window {
 
             self.next_frame.scene.insert_primitive(PolychromeSprite {
                 order: 0,
-                pad: 0,
+                pixelated: false.into(),
                 grayscale: false.into(),
                 bounds,
                 corner_radii: Default::default(),
@@ -5074,6 +5074,9 @@ impl Window {
     /// Note that `bounds.intersect(&image_bounds)` is computed *before* the transform — pass
     /// equal rects (e.g. `ObjectFit::Fill`) when rotating, or the sub-tiling below will slice
     /// the image along unrotated axes.
+    ///
+    /// `pixelated` shows each image pixel as a hard-edged square whenever the image is drawn at
+    /// or above its pixel size (see [`PolychromeSprite::pixelated`]); smaller draws are filtered.
     pub fn paint_image(
         &mut self,
         bounds: Bounds<Pixels>,
@@ -5082,6 +5085,7 @@ impl Window {
         data: Arc<RenderImage>,
         frame_index: usize,
         grayscale: bool,
+        pixelated: bool,
         transformation: TransformationMatrix,
     ) -> Result<()> {
         self.invalidator.debug_assert_paint();
@@ -5163,7 +5167,7 @@ impl Window {
 
         self.next_frame.scene.insert_primitive(PolychromeSprite {
             order: 0,
-            pad: 0,
+            pixelated: pixelated.into(),
             grayscale: grayscale.into(),
             bounds: visible_bounds_snapped,
             content_mask,

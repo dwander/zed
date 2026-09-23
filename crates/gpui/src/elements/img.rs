@@ -129,6 +129,7 @@ where
 /// The style of an image element.
 pub struct ImageStyle {
     grayscale: bool,
+    pixelated: bool,
     object_fit: ObjectFit,
     transformation: Option<Transformation>,
     backdrop: SmallVec<[Background; 2]>,
@@ -140,6 +141,7 @@ impl Default for ImageStyle {
     fn default() -> Self {
         Self {
             grayscale: false,
+            pixelated: false,
             object_fit: ObjectFit::Contain,
             transformation: None,
             backdrop: SmallVec::new(),
@@ -157,6 +159,14 @@ pub trait StyledImage: Sized {
     /// Set the image to be displayed in grayscale.
     fn grayscale(mut self, grayscale: bool) -> Self {
         self.image_style().grayscale = grayscale;
+        self
+    }
+
+    /// Show each image pixel as a hard-edged square whenever the image is drawn at or above
+    /// its pixel size, instead of interpolating between pixels — like CSS
+    /// `image-rendering: pixelated`. Drawing it smaller than its pixel size stays filtered.
+    fn pixelated(mut self, pixelated: bool) -> Self {
+        self.image_style().pixelated = pixelated;
         self
     }
 
@@ -548,6 +558,7 @@ impl Element for Img {
                             data,
                             layout_state.frame_index,
                             self.style.grayscale,
+                            self.style.pixelated,
                             transformation,
                         )
                         .log_err();

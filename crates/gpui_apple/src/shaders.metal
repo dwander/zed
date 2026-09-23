@@ -744,6 +744,10 @@ float3 linear_to_extended_srgb(float3 l) {
 // hue is preserved. Headroom 1.0 (no EDR) compresses everything into SDR.
 constant float HDR_SOFT_KNEE_START = 0.8;
 
+// Texels per device pixel at or below which a pixelated sprite switches to nearest sampling.
+// 1.0 is exactly 1:1; the slack keeps float/bounds-snapping error from reading 100% as minified.
+constant float PIXELATED_MAX_TEXELS_PER_PIXEL = 1.005;
+
 float3 compress_to_headroom(float3 rgb, float headroom) {
   float knee = headroom * HDR_SOFT_KNEE_START;
   float range = headroom - knee;
@@ -766,6 +770,21 @@ fragment float4 polychrome_sprite_fragment(
                                           min_filter::linear);
   float4 sample =
       atlas_texture.sample(atlas_texture_sampler, input.tile_position);
+  // Pixelated: while magnified, take the nearest texel as-is instead of interpolating.
+  // Minified sprites keep the filtered sample above. Derivatives stay outside the branch.
+  float2 atlas_dims = float2(float(atlas_texture.get_width()),
+                             float(atlas_texture.get_height()));
+  float2 texel_pos = input.tile_position * atlas_dims;
+  float texels_per_pixel = max(length(dfdx(texel_pos)), length(dfdy(texel_pos)));
+  if (sprite.pixelated && texels_per_pixel <= PIXELATED_MAX_TEXELS_PER_PIXEL) {
+    float2 tile_min =
+        float2(sprite.tile.bounds.origin.x, sprite.tile.bounds.origin.y) + 0.5;
+    float2 tile_max =
+        tile_min +
+        float2(sprite.tile.bounds.size.width, sprite.tile.bounds.size.height) - 1.0;
+    float2 nearest = clamp(floor(texel_pos) + 0.5, tile_min, tile_max) / atlas_dims;
+    sample = atlas_texture.sample(atlas_texture_sampler, nearest, level(0.0));
+  }
   float distance =
       quad_sdf(input.local_position, sprite.bounds, sprite.corner_radii);
 

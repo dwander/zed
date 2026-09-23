@@ -954,7 +954,11 @@ impl From<SubpixelSprite> for Primitive {
 #[expect(missing_docs)]
 pub struct PolychromeSprite {
     pub order: DrawOrder,
-    pub pad: u32,
+    /// Nearest-neighbour sampling while the sprite is magnified (one texel covers at least one
+    /// device pixel), like CSS `image-rendering: pixelated`. Minified sprites keep the filtered
+    /// (mipmapped) path. Occupies the slot that used to be alignment padding, so the GPU layout
+    /// is unchanged.
+    pub pixelated: PaddedBool32,
     pub grayscale: PaddedBool32,
     pub opacity: f32,
     pub bounds: Bounds<ScaledPixels>,
