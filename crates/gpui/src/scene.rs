@@ -99,7 +99,7 @@ impl Scene {
     }
 
     pub fn insert_primitive(&mut self, primitive: impl Into<Primitive>) {
-        let mut primitive = primitive.into();
+        let primitive = primitive.into();
         // A drop shadow paints outside its own `bounds`: the shader expands the geometry by
         // `3 * blur_radius` to leave room for the gaussian tail (see `shadow_vertex`). Ordering it
         // by the un-expanded rect makes the tail invisible wherever it lands on content painted
@@ -142,6 +142,10 @@ impl Scene {
                 .copied()
                 .unwrap_or_else(|| self.primitive_bounds.insert(clipped_bounds))
         };
+        self.insert_ordered_primitive(primitive, order);
+    }
+
+    fn insert_ordered_primitive(&mut self, mut primitive: Primitive, order: DrawOrder) {
         match &mut primitive {
             Primitive::Shadow(shadow) => {
                 shadow.order = order;
@@ -198,6 +202,9 @@ impl Scene {
     }
 
     pub fn replay(&mut self, range: Range<usize>, prev_scene: &Scene) {
+        if self.replay_ordered(&prev_scene.paint_operations[range.clone()]) {
+            return;
+        }
         for operation in &prev_scene.paint_operations[range] {
             match operation {
                 PaintOperation::Primitive(primitive) => self.insert_primitive(primitive.clone()),
@@ -205,6 +212,62 @@ impl Scene {
                 PaintOperation::EndLayer => self.pop_layer(),
             }
         }
+    }
+
+    fn replay_ordered(&mut self, operations: &[PaintOperation]) -> bool {
+        // Small ranges do not amortize the scan. Layers crossing a replay boundary and
+        // filters require the original insertion path. Balanced text layers are local.
+        const MIN_ORDERED_REPLAY: usize = 128;
+        if operations.len() < MIN_ORDERED_REPLAY || !self.layer_stack.is_empty() {
+            return false;
+        }
+        let mut minimum = DrawOrder::MAX;
+        let mut maximum = 0;
+        let mut bounds: Option<Bounds<ScaledPixels>> = None;
+        let mut layer_depth = 0usize;
+        for operation in operations {
+            let primitive = match operation {
+                PaintOperation::Primitive(primitive) => primitive,
+                PaintOperation::StartLayer(_) => {
+                    layer_depth += 1;
+                    continue;
+                }
+                PaintOperation::EndLayer => {
+                    let Some(depth) = layer_depth.checked_sub(1) else { return false };
+                    layer_depth = depth;
+                    continue;
+                }
+            };
+            if matches!(primitive, Primitive::BackdropFilter(_) | Primitive::FilterBoundary(_)) {
+                return false;
+            }
+            minimum = minimum.min(primitive.order());
+            maximum = maximum.max(primitive.order());
+            let painted = match primitive {
+                Primitive::Shadow(shadow) if shadow.inset == 0 =>
+                    shadow.bounds.dilate(shadow.blur_radius * 3.),
+                _ => *primitive.bounds(),
+            }.intersect(&primitive.content_mask().bounds);
+            bounds = Some(bounds.map_or(painted, |bounds| bounds.union(&painted)));
+        }
+        if layer_depth != 0 { return false; }
+        let Some(bounds) = bounds else { return false };
+        let Some(start) = self.primitive_bounds.reserve_order_range(bounds, maximum - minimum) else {
+            return false;
+        };
+        // Rebase rather than accumulate absolute orders across cached frames. Everything
+        // preceding/following this range stays outside its band; internal overlaps and
+        // equal-order batching retain the exact order of the original painted subtree.
+        for operation in operations {
+            match operation {
+                PaintOperation::Primitive(primitive) =>
+                    self.insert_ordered_primitive(primitive.clone(), start + (primitive.order() - minimum)),
+                PaintOperation::StartLayer(bounds) =>
+                    self.paint_operations.push(PaintOperation::StartLayer(*bounds)),
+                PaintOperation::EndLayer => self.paint_operations.push(PaintOperation::EndLayer),
+            }
+        }
+        true
     }
 
     pub fn finish(&mut self) {
@@ -311,6 +374,21 @@ pub enum Primitive {
 
 #[expect(missing_docs)]
 impl Primitive {
+    fn order(&self) -> DrawOrder {
+        match self {
+            Self::Shadow(value) => value.order,
+            Self::Quad(value) => value.order,
+            Self::Path(value) => value.order,
+            Self::Underline(value) => value.order,
+            Self::MonochromeSprite(value) => value.order,
+            Self::SubpixelSprite(value) => value.order,
+            Self::PolychromeSprite(value) => value.order,
+            Self::Surface(value) => value.order,
+            Self::BackdropFilter(value) => value.order,
+            Self::FilterBoundary(value) => value.order,
+        }
+    }
+
     pub fn bounds(&self) -> &Bounds<ScaledPixels> {
         match self {
             Primitive::Shadow(shadow) => &shadow.bounds,
@@ -1202,6 +1280,174 @@ mod tests {
             bounds: full_bounds(),
             content_mask: mask(),
             ..Default::default()
+        }
+    }
+
+    #[test]
+    fn cached_replay_preserves_overlapping_order_and_following_overlays() {
+        let mut previous = Scene::default();
+        for index in 0..160 {
+            previous.insert_primitive(if index % 2 == 0 { quad() } else { detached_quad() });
+        }
+        let mut next = Scene::default();
+        next.insert_primitive(quad());
+        assert!(next.replay_ordered(&previous.paint_operations));
+        let first_order = next.quads[0].order;
+        let cached = &next.quads[1..];
+        for (index, item) in cached.iter().enumerate() {
+            assert!(item.order > first_order);
+            for (other_index, other) in cached.iter().enumerate() {
+                assert_eq!(item.order.cmp(&other.order),
+                    previous.quads[index].order.cmp(&previous.quads[other_index].order));
+            }
+        }
+        let cached_max = cached.iter().map(|quad| quad.order).max().unwrap();
+        next.insert_primitive(quad());
+        next.insert_primitive(detached_quad());
+        assert!(next.quads[161].order > cached_max);
+        assert!(next.quads[162].order > cached_max);
+    }
+
+    #[test]
+    fn cached_replay_rebases_orders_on_every_frame() {
+        let mut previous = Scene::default();
+        for _ in 0..160 { previous.insert_primitive(quad()); }
+        for _ in 0..500 {
+            let mut next = Scene::default();
+            next.insert_primitive(quad());
+            next.replay(0..previous.len(), &previous);
+            assert_eq!(next.quads.last().unwrap().order, 161);
+            // Only the cached subtree is replayed again, excluding this frame's prefix.
+            let mut subtree = Scene::default();
+            subtree.replay(1..next.len(), &next);
+            previous = subtree;
+        }
+    }
+
+    #[test]
+    fn cached_replay_preserves_balanced_text_layers() {
+        let mut previous = Scene::default();
+        for _ in 0..64 {
+            previous.push_layer(full_bounds());
+            previous.insert_primitive(quad());
+            previous.insert_primitive(quad());
+            previous.pop_layer();
+        }
+        for _ in 0..3 {
+            let mut next = Scene::default();
+            assert!(next.replay_ordered(&previous.paint_operations));
+            assert_eq!(next.len(), previous.len());
+            for (left, right) in next.quads.iter().zip(&previous.quads) {
+                assert_eq!(left.order, right.order);
+            }
+            next.insert_primitive(quad());
+            assert!(next.quads.last().unwrap().order > previous.quads.last().unwrap().order);
+            next.paint_operations.pop();
+            next.quads.pop();
+            previous = next;
+        }
+    }
+
+    #[test]
+    fn cached_replay_keeps_layer_and_filter_fallbacks() {
+        let mut previous = Scene::default();
+        for _ in 0..160 { previous.insert_primitive(quad()); }
+        let mut next = Scene::default();
+        next.push_layer(full_bounds());
+        assert!(!next.replay_ordered(&previous.paint_operations));
+        next.replay(0..previous.len(), &previous);
+        assert!(next.quads.iter().all(|quad| quad.order == next.quads[0].order));
+        next.pop_layer();
+        previous.insert_primitive(backdrop());
+        let before = next.len();
+        assert!(!next.replay_ordered(&previous.paint_operations));
+        assert_eq!(next.len(), before);
+        previous.paint_operations.pop();
+        previous.push_layer(full_bounds());
+        assert!(!next.replay_ordered(&previous.paint_operations));
+    }
+
+    #[test]
+    #[ignore = "manual CPU comparison; run without concurrent builds"]
+    fn cached_grid_replay_benchmark() {
+        let mut previous = Scene::default();
+        for index in 0..400 {
+            let bounds = Bounds {
+                origin: Point { x: sp((index % 20) as f32 * 90.), y: sp((index / 20) as f32 * 100.) },
+                size: Size { width: sp(80.), height: sp(90.) },
+            };
+            let cell = Quad { bounds, content_mask: ContentMask { bounds }, ..Default::default() };
+            for _ in 0..8 { previous.insert_primitive(cell); }
+            previous.push_layer(bounds);
+            for _ in 0..16 { previous.insert_primitive(cell); }
+            previous.pop_layer();
+        }
+        let mut next = Scene::default();
+        for fast in [false, true] {
+            let start = std::time::Instant::now();
+            for _ in 0..100 {
+                next.clear();
+                if fast {
+                    next.replay(0..previous.len(), &previous);
+                } else {
+                    for operation in &previous.paint_operations {
+                        match operation {
+                            PaintOperation::Primitive(primitive) => next.insert_primitive(primitive.clone()),
+                            PaintOperation::StartLayer(bounds) => next.push_layer(*bounds),
+                            PaintOperation::EndLayer => next.pop_layer(),
+                        }
+                    }
+                }
+                std::hint::black_box(&next);
+            }
+            eprintln!("cached grid replay fast={fast}: {:.3} ms/frame", start.elapsed().as_secs_f64() * 10.);
+        }
+    }
+
+    #[test]
+    fn cached_replay_matches_uncached_compositing_order() {
+        use rand::{Rng as _, SeedableRng as _};
+        for seed in 0..8 {
+            let mut random = rand::rngs::StdRng::seed_from_u64(seed);
+            let mut previous = Scene::default();
+            previous.insert_primitive(quad());
+            for _ in 0..180 {
+                let bounds = Bounds {
+                    origin: Point { x: sp(random.random_range(0.0..200.0)), y: sp(random.random_range(0.0..200.0)) },
+                    size: Size { width: sp(40.0), height: sp(40.0) },
+                };
+                previous.push_layer(bounds);
+                for _ in 0..3 {
+                    previous.insert_primitive(Quad { bounds, content_mask: ContentMask { bounds }, ..Default::default() });
+                }
+                previous.pop_layer();
+            }
+            let operations = &previous.paint_operations[1..];
+            let mut fast = Scene::default();
+            let mut slow = Scene::default();
+            for scene in [&mut fast, &mut slow] { scene.insert_primitive(detached_quad()); }
+            assert!(fast.replay_ordered(operations));
+            for operation in operations {
+                match operation {
+                    PaintOperation::Primitive(primitive) => slow.insert_primitive(primitive.clone()),
+                    PaintOperation::StartLayer(bounds) => slow.push_layer(*bounds),
+                    PaintOperation::EndLayer => slow.pop_layer(),
+                }
+            }
+            for scene in [&mut fast, &mut slow] { scene.insert_primitive(quad()); }
+            for x in (0..240).step_by(10) {
+                for y in (0..240).step_by(10) {
+                    let position = Point { x: sp(x as f32), y: sp(y as f32) };
+                    let orders = |scene: &Scene| {
+                        let mut visible: Vec<_> = scene.quads.iter().enumerate()
+                            .filter(|(_, quad)| quad.bounds.contains(&position))
+                            .map(|(index, quad)| (quad.order, index)).collect();
+                        visible.sort();
+                        visible.into_iter().map(|(_, index)| index).collect::<Vec<_>>()
+                    };
+                    assert_eq!(orders(&fast), orders(&slow), "seed={seed}, x={x}, y={y}");
+                }
+            }
         }
     }
 

@@ -141,6 +141,18 @@ where
         ordering
     }
 
+    /// Reserve a contiguous order band for an already ordered, self-contained subtree.
+    /// A single bounds entry replaces the subtree's individual spatial insertions.
+    pub fn reserve_order_range(&mut self, bounds: Bounds<U>, span: u32) -> Option<u32> {
+        let start = self.max_order().checked_add(1)?.max(self.order_floor);
+        let end = start.checked_add(span)?;
+        let next = end.checked_add(1)?;
+        let index = self.insert_leaf(bounds, end);
+        self.max_leaf = Some(index);
+        self.order_floor = next;
+        Some(start)
+    }
+
     /// Inserts bounds into the tree and returns its assigned ordering.
     ///
     /// The ordering is one greater than the maximum ordering of any
