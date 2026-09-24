@@ -5629,7 +5629,14 @@ impl Window {
         let old_modality = self.last_input_modality;
         self.last_input_modality = match &event {
             PlatformInput::KeyDown(_) => InputModality::Keyboard,
-            PlatformInput::MouseMove(_) | PlatformInput::MouseDown(_) => InputModality::Mouse,
+            // Windows can send WM_MOUSEMOVE while the pointer is stationary (e.g. after
+            // a cursor/window update). Treating that as a modality change alternates
+            // mouse/keyboard on every held key and invalidates every cached view twice.
+            // Still dispatch the event below so hover geometry and modifiers stay current.
+            PlatformInput::MouseMove(event) if event.position != self.mouse_position => {
+                InputModality::Mouse
+            }
+            PlatformInput::MouseDown(_) => InputModality::Mouse,
             PlatformInput::Touch(_) => InputModality::Touch,
             _ => self.last_input_modality,
         };
@@ -8155,6 +8162,45 @@ mod tests {
             test_window.frame_wake_count() > baseline,
             "scheduling a next-frame callback in an idle window must wake the frame source"
         );
+    }
+
+    #[gpui::test]
+    fn stationary_mouse_move_does_not_interrupt_keyboard_navigation(cx: &mut TestAppContext) {
+        let handle = cx.add_window(|_, _| EmptyView);
+        cx.update_window(handle.into(), |_, window, cx| {
+            let position = point(px(40.), px(50.));
+            let mouse_move = |position| PlatformInput::MouseMove(MouseMoveEvent {
+                position,
+                pressed_button: None,
+                modifiers: Default::default(),
+            });
+            let key_down = || PlatformInput::KeyDown(KeyDownEvent {
+                keystroke: Keystroke::parse("right").unwrap(),
+                is_held: true,
+                prefer_character_input: false,
+            });
+            window.dispatch_event(mouse_move(position), cx);
+            window.dispatch_event(key_down(), cx);
+            window.draw(cx).clear(cx);
+            for _ in 0..3 {
+                window.dispatch_event(mouse_move(position), cx);
+                assert!(window.last_input_was_keyboard());
+                assert!(!window.invalidator.is_dirty(), "stationary moves must not invalidate cached views");
+                window.dispatch_event(key_down(), cx);
+                assert!(!window.invalidator.is_dirty());
+            }
+            window.dispatch_event(mouse_move(point(px(41.), px(50.))), cx);
+            assert!(!window.last_input_was_keyboard(), "real movement restores mouse modality");
+            window.dispatch_event(key_down(), cx);
+            window.dispatch_event(PlatformInput::MouseDown(MouseDownEvent {
+                button: MouseButton::Left,
+                position: point(px(41.), px(50.)),
+                modifiers: Default::default(),
+                click_count: 1,
+                first_mouse: false,
+            }), cx);
+            assert!(!window.last_input_was_keyboard(), "clicking without movement restores mouse modality");
+        }).unwrap();
     }
 
     /// A frame request that arrives while next-frame callbacks are pending
