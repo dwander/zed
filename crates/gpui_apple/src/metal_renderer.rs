@@ -1162,8 +1162,21 @@ impl MetalRenderer {
         // Content blur bleeds ~3·radius past the box, so its composite quad covers a dilated rect;
         // a group scaled up past 1 likewise reaches past its bounds. Both grow the quad only —
         // the shape still comes from the sampled alpha.
+        //
+        // An unblurred (scale-only) group composites wherever its source can land inside the
+        // clip instead. Its children may paint outside its box — an outset ring, a badge — and
+        // the group target holds exactly what the group painted (it is cleared to transparent),
+        // so clipping to the box would cut that overflow off for as long as the group is
+        // isolated, and it would pop in only when isolation ends (an `appear_scale` entrance
+        // whose frosted rim appeared late). The quad stops where the source leaves the content
+        // mask: past it the target is empty anyway, and reading past the target's edge would
+        // smear its border texels (clamp here; the DirectX sampler wraps). A blurred group keeps
+        // the dilated box — it stays isolated for as long as it exists, and a full-clip pass
+        // every frame would cost more than the overflow it recovers.
         let composite_bounds = if clip_rounded {
             bounds
+        } else if !blurred {
+            content_mask.intersect(&scale_about(content_mask, scale, scale_anchor))
         } else {
             let bleed = bounds.dilate(ScaledPixels(3.0 * blur_radius));
             if scale > 1.0 {
