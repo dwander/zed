@@ -77,8 +77,8 @@ pub(crate) struct WindowsPlatformState {
     jump_list: RefCell<JumpList>,
     // NOTE: standard cursor handles don't need to close.
     pub(crate) current_cursor: Cell<Option<HCURSOR>>,
-    /// Registered custom image cursors (id → HCURSOR), kept for the app lifetime.
-    pub(crate) custom_cursors: RefCell<HashMap<u32, HCURSOR>>,
+    /// Registered custom image cursors (id → source image + per-DPI HCURSOR), kept for the app lifetime.
+    pub(crate) custom_cursors: RefCell<HashMap<u32, CustomCursor>>,
     custom_cursor_next_id: Cell<u32>,
     /// Shared with each window so `WM_SETCURSOR` can read it directly.
     pub(crate) cursor_visible: Arc<AtomicBool>,
@@ -866,7 +866,13 @@ impl Platform for WindowsPlatform {
     fn set_cursor_style(&self, style: CursorStyle) {
         let hcursor = match style {
             // 등록된 커스텀 이미지 커서는 맵에서 조회(없으면 None → 시스템 기본).
-            CursorStyle::Custom(id) => self.inner.state.custom_cursors.borrow().get(&id).copied(),
+            CursorStyle::Custom(id) => self
+                .inner
+                .state
+                .custom_cursors
+                .borrow_mut()
+                .get_mut(&id)
+                .and_then(|cursor| cursor.at_dpi(dpi_at_pointer())),
             _ => load_cursor(style),
         };
         if self.inner.state.current_cursor.get().map(|c| c.0) != hcursor.map(|c| c.0) {
@@ -880,12 +886,17 @@ impl Platform for WindowsPlatform {
     }
 
     fn register_custom_cursor(&self, image: &CustomCursorImage) -> CursorStyle {
-        let Some(hcursor) = create_custom_cursor(image) else {
-            return CursorStyle::Arrow;
+        let mut cursor = CustomCursor {
+            image: image.clone(),
+            by_dpi: HashMap::new(),
         };
+        // 지금 배율로 한 번 만들어 본다 — 잘못된 이미지는 등록하지 않고 화살표로 돌려준다.
+        if cursor.at_dpi(dpi_at_pointer()).is_none() {
+            return CursorStyle::Arrow;
+        }
         let id = self.inner.state.custom_cursor_next_id.get();
         self.inner.state.custom_cursor_next_id.set(id + 1);
-        self.inner.state.custom_cursors.borrow_mut().insert(id, hcursor);
+        self.inner.state.custom_cursors.borrow_mut().insert(id, cursor);
         CursorStyle::Custom(id)
     }
 
