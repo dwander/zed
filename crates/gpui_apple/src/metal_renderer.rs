@@ -1,11 +1,7 @@
 use crate::metal_atlas::MetalAtlas;
 use anyhow::{Context as _, Result};
-use block::ConcreteBlock;
-use cocoa::{
-    base::{NO, YES},
-    foundation::{NSSize, NSUInteger},
-    quartzcore::AutoresizingMask,
-};
+use block2::RcBlock;
+use core_graphics::geometry::CGSize;
 use gpui::{
     AtlasTextureId, Background, Bounds, ContentMask, Corners, DevicePixels, FilterBoundary,
     PaintSurface, Path, Point, PrimitiveBatch, ScaledFilter, ScaledPixels, Scene, Size, point,
@@ -51,6 +47,7 @@ fn scale_about(
 
 #[cfg(any(test, feature = "bench-support", feature = "test-support"))]
 use image::RgbaImage;
+use objc2::runtime::AnyObject;
 
 use core_foundation::base::TCFType;
 use core_video::{
@@ -60,8 +57,8 @@ use core_video::{
 use foreign_types::{ForeignType, ForeignTypeRef};
 use metal::{
     CAMetalLayer, CommandQueue, MTLGPUFamily, MTLPixelFormat, MTLResourceOptions, NSRange,
+    NSUInteger,
 };
-use objc::{self, msg_send, sel, sel_impl};
 use parking_lot::Mutex;
 
 use std::{cell::Cell, ffi::c_void, mem, mem::MaybeUninit, ops::Range, ptr, slice, sync::Arc};
@@ -274,38 +271,67 @@ impl MetalRenderer {
     /// Creates a new MetalRenderer with a CAMetalLayer for window-based rendering.
     pub fn new(instance_buffer_pool: Arc<Mutex<InstanceBufferPool>>, transparent: bool) -> Self {
         let device = Self::create_device();
-
         let layer = metal::MetalLayer::new();
-        layer.set_device(&device);
+        Self::configure_layer(&layer, &device, transparent);
+        Self::new_internal(device, Some(layer), !transparent, instance_buffer_pool)
+    }
+
+    /// Creates a renderer for a CAMetalLayer owned by a platform view, such as
+    /// the backing layer UIKit creates for a view whose `layerClass` is
+    /// `CAMetalLayer`. The renderer retains the layer.
+    pub fn from_layer(
+        instance_buffer_pool: Arc<Mutex<InstanceBufferPool>>,
+        layer: &objc2_quartz_core::CAMetalLayer,
+        transparent: bool,
+    ) -> Self {
+        let device = Self::create_device();
+        // Both types bind the same Objective-C class, so this only changes which
+        // Rust wrapper views the live layer. `to_owned` retains it.
+        let layer = unsafe {
+            metal::MetalLayerRef::from_ptr(ptr::from_ref(layer).cast_mut().cast::<CAMetalLayer>())
+        }
+        .to_owned();
+        Self::configure_layer(&layer, &device, transparent);
+        Self::new_internal(device, Some(layer), !transparent, instance_buffer_pool)
+    }
+
+    fn configure_layer(layer: &metal::MetalLayerRef, device: &metal::DeviceRef, transparent: bool) {
+        layer.set_device(device);
         layer.set_pixel_format(RENDER_TARGET_FORMAT);
+        // Support direct-to-display rendering if the window is not transparent
+        // https://developer.apple.com/documentation/metal/managing-your-game-window-for-metal-in-macos
+        layer.set_opaque(!transparent);
+        layer.set_maximum_drawable_count(3);
+        // Allow texture reading for visual tests and UI automation screenshots
+        // (captures without ScreenCaptureKit). Only debug builds pay the
+        // presentation cost, even when `test-support` is compiled in.
+        #[cfg(all(feature = "test-support", debug_assertions))]
+        layer.set_framebuffer_only(false);
+        // metal-rs doesn't bind these setters, so view the same object through
+        // objc2's typed CAMetalLayer binding.
+        let objc2_layer: &objc2_quartz_core::CAMetalLayer = unsafe { &*layer.as_ptr().cast() };
+        objc2_layer.setAllowsNextDrawableTimeout(false);
+        objc2_layer.setNeedsDisplayOnBoundsChange(true);
         // A float layer with no colorspace is composited as *linear* — every sRGB-encoded value the
         // shaders write would be shown washed out. Extended sRGB keeps 0..1 exactly as the 8-bit
         // (sRGB) layer showed them and lets values above 1.0 through as EDR.
         unsafe {
             let colorspace = crate::cg_colorspace::extended_srgb();
             if !colorspace.is_null() {
-                let _: () = msg_send![&*layer, setColorspace: colorspace];
+                let _: () = objc2::msg_send![
+                    objc2_layer,
+                    setColorspace: crate::cg_colorspace::ColorSpaceArg(colorspace)
+                ];
                 crate::cg_colorspace::release(colorspace);
             }
         }
-        // Support direct-to-display rendering if the window is not transparent
-        // https://developer.apple.com/documentation/metal/managing-your-game-window-for-metal-in-macos
-        layer.set_opaque(!transparent);
-        layer.set_maximum_drawable_count(3);
-        // Allow texture reading for visual tests (captures screenshots without ScreenCaptureKit)
-        #[cfg(any(test, feature = "test-support"))]
-        layer.set_framebuffer_only(false);
-        unsafe {
-            let _: () = msg_send![&*layer, setAllowsNextDrawableTimeout: NO];
-            let _: () = msg_send![&*layer, setNeedsDisplayOnBoundsChange: YES];
-            let _: () = msg_send![
-                &*layer,
-                setAutoresizingMask: AutoresizingMask::WIDTH_SIZABLE
-                    | AutoresizingMask::HEIGHT_SIZABLE
-            ];
-        }
-
-        Self::new_internal(device, Some(layer), !transparent, instance_buffer_pool)
+        // UIKit sizes a view's backing layer itself; only AppKit-hosted
+        // layers need to track their superlayer's bounds.
+        #[cfg(target_os = "macos")]
+        objc2_layer.setAutoresizingMask(
+            objc2_quartz_core::CAAutoresizingMask::LayerWidthSizable
+                | objc2_quartz_core::CAAutoresizingMask::LayerHeightSizable,
+        );
     }
 
     /// Creates a new headless MetalRenderer for offscreen rendering without a window.
@@ -318,6 +344,7 @@ impl MetalRenderer {
         Self::new_internal(device, None, true, instance_buffer_pool)
     }
 
+    #[cfg(target_os = "macos")]
     fn create_device() -> metal::Device {
         // Prefer low‐power integrated GPUs on Intel Mac. On Apple
         // Silicon, there is only ever one GPU, so this is equivalent to
@@ -333,11 +360,20 @@ impl MetalRenderer {
             log::error!(
                 "Unable to enumerate Metal devices; attempting to use system default device"
             );
-            metal::Device::system_default().unwrap_or_else(|| {
-                log::error!("unable to access a compatible graphics device");
-                std::process::exit(1);
-            })
+            Self::system_default_device()
         }
+    }
+
+    #[cfg(target_os = "ios")]
+    fn create_device() -> metal::Device {
+        Self::system_default_device()
+    }
+
+    fn system_default_device() -> metal::Device {
+        metal::Device::system_default().unwrap_or_else(|| {
+            log::error!("unable to access a compatible graphics device");
+            std::process::exit(1);
+        })
     }
 
     fn new_internal(
@@ -364,7 +400,9 @@ impl MetalRenderer {
 
         // Shared memory can be used only if CPU and GPU share the same memory space.
         // https://developer.apple.com/documentation/metal/setting-resource-storage-modes
-        let is_unified_memory = device.has_unified_memory();
+        // iOS does not support managed resources. Its simulator may report a
+        // non-unified host GPU even though resources must still use shared storage.
+        let is_unified_memory = cfg!(target_os = "ios") || device.has_unified_memory();
         // Apple GPU families support memoryless textures, which can significantly reduce
         // memory usage by keeping render targets in on-chip tile memory instead of
         // allocating backing store in system memory.
@@ -483,7 +521,8 @@ impl MetalRenderer {
         );
 
         let command_queue = device.new_command_queue();
-        let sprite_atlas = Arc::new(MetalAtlas::new(device.clone(), is_apple_gpu));
+        let supports_shared_storage = cfg!(target_os = "ios") || is_apple_gpu;
+        let sprite_atlas = Arc::new(MetalAtlas::new(device.clone(), supports_shared_storage));
         let core_video_texture_cache =
             CVMetalTextureCache::new(None, device.clone(), None).unwrap();
 
@@ -547,16 +586,7 @@ impl MetalRenderer {
 
     pub fn update_drawable_size(&mut self, size: Size<DevicePixels>) {
         if let Some(layer) = &self.layer {
-            let ns_size = NSSize {
-                width: size.width.0 as f64,
-                height: size.height.0 as f64,
-            };
-            unsafe {
-                let _: () = msg_send![
-                    layer.as_ref(),
-                    setDrawableSize: ns_size
-                ];
-            }
+            layer.set_drawable_size(CGSize::new(size.width.0 as f64, size.height.0 as f64));
         }
         self.update_path_intermediate_textures(size);
     }
@@ -723,13 +753,15 @@ impl MetalRenderer {
 
         let instance_buffer_pool = self.instance_buffer_pool.clone();
         let instance_buffer = Cell::new(Some(writer.finish()));
-        let block = ConcreteBlock::new(move |_| {
+        let block = RcBlock::new(move |_: ptr::NonNull<AnyObject>| {
             if let Some(instance_buffer) = instance_buffer.take() {
                 instance_buffer_pool.lock().release(instance_buffer);
             }
         });
-        let block = block.copy();
-        command_buffer.add_completed_handler(&block);
+        // SAFETY: Both pointee types are opaque views of the same Objective-C block pointer ABI.
+        unsafe {
+            command_buffer.add_completed_handler(&*RcBlock::as_ptr(&block).cast());
+        }
 
         Ok(command_buffer)
     }
@@ -792,15 +824,22 @@ impl MetalRenderer {
             texture_descriptor.set_usage(
                 metal::MTLTextureUsage::RenderTarget | metal::MTLTextureUsage::ShaderRead,
             );
-            texture_descriptor.set_storage_mode(metal::MTLStorageMode::Managed);
+            // Like the atlas, only Apple GPUs can create shared textures on macOS;
+            // Intel Macs cannot, even with unified memory. iOS has no managed storage.
+            let uses_shared_storage = cfg!(target_os = "ios") || self.is_apple_gpu;
+            texture_descriptor.set_storage_mode(if uses_shared_storage {
+                metal::MTLStorageMode::Shared
+            } else {
+                metal::MTLStorageMode::Managed
+            });
             let target_texture = self.device.new_texture(&texture_descriptor);
 
             let command_buffer = self.render_frame(scene, &target_texture, size)?;
 
-            // On discrete GPUs (non-unified memory), Managed textures require an
-            // explicit blit synchronize before the CPU can read back the rendered
-            // data. Without this, get_bytes returns stale zeros.
-            if !self.is_unified_memory {
+            // Managed textures require an explicit blit synchronize before the CPU
+            // can read back the rendered data. Without this, get_bytes returns
+            // stale zeros.
+            if !uses_shared_storage {
                 let blit = command_buffer.new_blit_command_encoder();
                 blit.synchronize_resource(&target_texture);
                 blit.end_encoding();
@@ -1540,7 +1579,9 @@ impl MetalRenderer {
             return;
         }
 
-        let texture = self.sprite_atlas.metal_texture(texture_id);
+        let Some(texture) = self.sprite_atlas.metal_texture(texture_id) else {
+            return;
+        };
         let texture_size = size(
             DevicePixels(texture.width() as i32),
             DevicePixels(texture.height() as i32),
@@ -1594,7 +1635,9 @@ impl MetalRenderer {
             return;
         }
 
-        let texture = self.sprite_atlas.metal_texture(texture_id);
+        let Some(texture) = self.sprite_atlas.metal_texture(texture_id) else {
+            return;
+        };
         let texture_size = size(
             DevicePixels(texture.width() as i32),
             DevicePixels(texture.height() as i32),

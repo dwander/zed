@@ -59,13 +59,17 @@ impl DirectXAtlas {
         })))
     }
 
+    /// Returns the view backing `id`, or `None` once every tile in it has been
+    /// removed. A scene can still reference such a texture when a cached view
+    /// replays a paint from before the image was dropped, so callers must skip
+    /// those sprites rather than assume the texture exists.
     pub(crate) fn get_texture_view(
         &self,
         id: AtlasTextureId,
-    ) -> [Option<ID3D11ShaderResourceView>; 1] {
+    ) -> Option<[Option<ID3D11ShaderResourceView>; 1]> {
         let lock = self.0.lock();
-        let texture = lock.backend.texture(id);
-        texture.view.clone()
+        let texture = lock.backend.texture(id)?;
+        Some(texture.view.clone())
     }
 
     pub(crate) fn handle_device_lost(
@@ -116,7 +120,9 @@ impl AtlasBackend for DirectXAtlasTextures {
         let tile = self
             .allocate(size, kind, mipmapped)
             .ok_or_else(|| anyhow::anyhow!("failed to allocate"))?;
-        let texture = self.texture(tile.texture_id);
+        let texture = self
+            .texture(tile.texture_id)
+            .ok_or_else(|| anyhow::anyhow!("allocated tile refers to a missing texture"))?;
         texture.upload(&self.device_context, tile.bounds, bytes);
         // 밉 0(원본) 업로드 후 나머지 밉 레벨을 GPU 로 채운다(전용 텍스처당 1회, 프레임당 아님).
         if texture.mipmapped {
@@ -302,21 +308,14 @@ impl DirectXAtlasTextures {
         }
     }
 
-    fn texture(&self, id: AtlasTextureId) -> &DirectXAtlasTexture {
-        match id.kind {
-            AtlasTextureKind::Monochrome => &self.monochrome_textures[id.index as usize]
-                .as_ref()
-                .unwrap(),
-            AtlasTextureKind::Polychrome => &self.polychrome_textures[id.index as usize]
-                .as_ref()
-                .unwrap(),
-            AtlasTextureKind::Subpixel => {
-                &self.subpixel_textures[id.index as usize].as_ref().unwrap()
-            }
-            AtlasTextureKind::PolychromeHdr => &self.polychrome_hdr_textures[id.index as usize]
-                .as_ref()
-                .unwrap(),
-        }
+    fn texture(&self, id: AtlasTextureId) -> Option<&DirectXAtlasTexture> {
+        let textures = match id.kind {
+            AtlasTextureKind::Monochrome => &self.monochrome_textures,
+            AtlasTextureKind::Polychrome => &self.polychrome_textures,
+            AtlasTextureKind::Subpixel => &self.subpixel_textures,
+            AtlasTextureKind::PolychromeHdr => &self.polychrome_hdr_textures,
+        };
+        textures.textures.get(id.index as usize)?.as_ref()
     }
 }
 

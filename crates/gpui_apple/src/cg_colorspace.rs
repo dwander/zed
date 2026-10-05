@@ -27,3 +27,15 @@ pub(crate) fn extended_srgb() -> *mut c_void {
 pub(crate) unsafe fn release(space: *mut c_void) {
     unsafe { CGColorSpaceRelease(space) }
 }
+
+/// A `CGColorSpaceRef` carrying the Objective-C type encoding of the real argument
+/// (`^{CGColorSpace=}`), so objc2's debug-build message verification accepts it for
+/// `-[CAMetalLayer setColorspace:]`.
+#[repr(transparent)]
+pub(crate) struct ColorSpaceArg(pub(crate) *mut c_void);
+
+// Safety: a single raw pointer, encoded as the pointer-to-struct the method declares.
+unsafe impl objc2::encode::Encode for ColorSpaceArg {
+    const ENCODING: objc2::encode::Encoding =
+        objc2::encode::Encoding::Pointer(&objc2::encode::Encoding::Struct("CGColorSpace", &[]));
+}
