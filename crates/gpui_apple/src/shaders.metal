@@ -1215,6 +1215,12 @@ float4 distance_from_clip_rect_transformed(float2 unit_vertex, Bounds_ScaledPixe
 float4 over(float4 below, float4 above) {
   float4 result;
   float alpha = above.a + below.a * (1.0 - above.a);
+  // Both layers fully transparent (e.g. a dash gap on a border-only quad) would be 0/0 = NaN. An
+  // 8-bit target silently writes that as 0, but a float target keeps it, and a blur over it then
+  // smears the NaN into a solid box.
+  if (alpha <= 0.0) {
+    return float4(0.0);
+  }
   result.rgb =
       (above.rgb * above.a + below.rgb * below.a * (1.0 - above.a)) / alpha;
   result.a = alpha;

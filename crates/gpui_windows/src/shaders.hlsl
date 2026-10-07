@@ -253,6 +253,11 @@ float gaussian(float x, float sigma) {
 float4 over(float4 below, float4 above) {
     float4 result;
     float alpha = above.a + below.a * (1.0 - above.a);
+    // Both layers fully transparent would be 0/0 = NaN — harmless on an 8-bit target, but a float
+    // target keeps it and a blur smears it into a box (see the Metal shader).
+    if (alpha <= 0.0) {
+        return float4(0.0, 0.0, 0.0, 0.0);
+    }
     result.rgb = (above.rgb * above.a + below.rgb * below.a * (1.0 - above.a)) / alpha;
     result.a = alpha;
     return result;
