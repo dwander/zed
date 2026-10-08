@@ -101,6 +101,18 @@ const GRAYSCALE_FACTORS: vec3<f32> = vec3<f32>(0.2126, 0.7152, 0.0722);
 // Texels per device pixel at or below which a pixelated sprite switches to nearest sampling.
 // 1.0 is exactly 1:1; the slack keeps float/bounds-snapping error from reading 100% as minified.
 const PIXELATED_MAX_TEXELS_PER_PIXEL: f32 = 1.005;
+// PolychromeSprite::pixelated bits (same values as scene.rs).
+const PIXELATED_FLAG: u32 = 1u;
+const PIXEL_GRID_FLAG: u32 = 2u;
+const PIXEL_GRID_DARK_FLAG: u32 = 4u;
+// Zoom (device pixels per texel) where the pixel grid starts to fade in / is fully shown
+// (700% / 900%). Computed from the zoom itself, so the fade needs no animation or extra frames.
+const PIXEL_GRID_FADE_START: f32 = 7.0;
+const PIXEL_GRID_FADE_END: f32 = 9.0;
+// How far a grid line pulls a pixel toward the line colour (white or black). The colour is one choice
+// per image — choosing it per pixel flips it across mid-tone gradients and looks scaly (the app picks
+// it from the image's brightness).
+const PIXEL_GRID_STRENGTH: f32 = 0.25;
 
 struct Bounds {
     origin: vec2<f32>,
@@ -1271,6 +1283,21 @@ fn fs_mono_sprite(input: MonoSpriteVarying) -> @location(0) vec4<f32> {
 
 // --- polychrome sprites --- //
 
+// Lays the grid on the first device-pixel row/column of each texel (its left/top edge). `texel_step`
+// is the texel advance per device pixel (fwidth). Nearest sampling paints the texel under each pixel
+// centre, so block edges already sit on device-pixel edges; marking that first row keeps the line a
+// crisp 1px even at fractional zooms.
+fn apply_pixel_grid(rgb: vec3<f32>, texel_pos: vec2<f32>, texel_step: vec2<f32>, texels_per_pixel: f32, dark: bool) -> vec3<f32> {
+    let fade = saturate((1.0 / max(texels_per_pixel, 1e-6) - PIXEL_GRID_FADE_START)
+        / (PIXEL_GRID_FADE_END - PIXEL_GRID_FADE_START));
+    let f = fract(texel_pos);
+    let px_step = max(texel_step, vec2<f32>(1e-6));
+    let from_start = f / px_step;
+    let line_cover = select(0.0, fade, any(from_start < vec2<f32>(1.0)));
+    let target_rgb = select(vec3<f32>(1.0), vec3<f32>(0.0), dark);
+    return mix(rgb, target_rgb, line_cover * PIXEL_GRID_STRENGTH);
+}
+
 struct PolychromeSprite {
     order: u32,
     pixelated: u32,
@@ -1314,6 +1341,7 @@ fn fs_poly_sprite(input: PolySpriteVarying) -> @location(0) vec4<f32> {
     let atlas_size = vec2<f32>(textureDimensions(t_sprite, 0));
     let texel_pos = input.tile_position * atlas_size;
     let texels_per_pixel = max(length(dpdx(texel_pos)), length(dpdy(texel_pos)));
+    let texel_step = fwidth(texel_pos);
     // Alpha clip after using the derivatives.
     if (any(input.clip_distances < vec4<f32>(0.0))) {
         return vec4<f32>(0.0);
@@ -1322,7 +1350,9 @@ fn fs_poly_sprite(input: PolySpriteVarying) -> @location(0) vec4<f32> {
     let sprite = load_poly_sprite(input.sprite_id);
     // Pixelated: while magnified, take the nearest texel as-is instead of interpolating.
     // Minified sprites keep the filtered sample above.
-    if (sprite.pixelated != 0u && texels_per_pixel <= PIXELATED_MAX_TEXELS_PER_PIXEL) {
+    let nearest_on = (sprite.pixelated & PIXELATED_FLAG) != 0u
+        && texels_per_pixel <= PIXELATED_MAX_TEXELS_PER_PIXEL;
+    if (nearest_on) {
         let tile_min = vec2<f32>(sprite.tile.bounds.origin) + 0.5;
         let tile_max = vec2<f32>(sprite.tile.bounds.origin + sprite.tile.bounds.size) - 0.5;
         let nearest = clamp(floor(texel_pos) + 0.5, tile_min, tile_max) / atlas_size;
@@ -1334,6 +1364,10 @@ fn fs_poly_sprite(input: PolySpriteVarying) -> @location(0) vec4<f32> {
     if (sprite.grayscale != 0u) {
         let grayscale = dot(color.rgb, GRAYSCALE_FACTORS);
         color = vec4<f32>(vec3<f32>(grayscale), sample.a);
+    }
+    if (nearest_on && (sprite.pixelated & PIXEL_GRID_FLAG) != 0u) {
+        let dark = (sprite.pixelated & PIXEL_GRID_DARK_FLAG) != 0u;
+        color = vec4<f32>(apply_pixel_grid(color.rgb, texel_pos, texel_step, texels_per_pixel, dark), color.a);
     }
     return blend_color(color, sprite.opacity * saturate(0.5 - distance));
 }

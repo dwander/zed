@@ -747,6 +747,34 @@ constant float HDR_SOFT_KNEE_START = 0.8;
 // Texels per device pixel at or below which a pixelated sprite switches to nearest sampling.
 // 1.0 is exactly 1:1; the slack keeps float/bounds-snapping error from reading 100% as minified.
 constant float PIXELATED_MAX_TEXELS_PER_PIXEL = 1.005;
+// PolychromeSprite::pixelated bits (same values as scene.rs).
+constant uint PIXELATED_FLAG = 1u;
+constant uint PIXEL_GRID_FLAG = 2u;
+constant uint PIXEL_GRID_DARK_FLAG = 4u;
+// Zoom (device pixels per texel) where the pixel grid starts to fade in / is fully shown
+// (700% / 900%). Computed from the zoom itself, so the fade needs no animation or extra frames.
+constant float PIXEL_GRID_FADE_START = 7.0;
+constant float PIXEL_GRID_FADE_END = 9.0;
+// How far a grid line pulls a pixel toward the line colour (white or black). The colour is one choice
+// per image — choosing it per pixel flips it across mid-tone gradients and looks scaly (the app picks
+// it from the image's brightness).
+constant float PIXEL_GRID_STRENGTH = 0.25;
+
+// Lays the grid on the first device-pixel row/column of each texel (its left/top edge). `texel_step`
+// is the texel advance per device pixel (fwidth). Nearest sampling paints the texel under each pixel
+// centre, so block edges already sit on device-pixel edges; marking that first row keeps the line a
+// crisp 1px even at fractional zooms.
+float3 apply_pixel_grid(float3 rgb, float2 texel_pos, float2 texel_step,
+                        float texels_per_pixel, bool dark) {
+  float fade = saturate((1.0 / max(texels_per_pixel, 1e-6) - PIXEL_GRID_FADE_START) /
+                        (PIXEL_GRID_FADE_END - PIXEL_GRID_FADE_START));
+  float2 f = fract(texel_pos);
+  float2 px_step = max(texel_step, float2(1e-6));
+  float2 from_start = f / px_step;
+  float line_cover = any(from_start < 1.0) ? fade : 0.0;
+  float3 target = dark ? float3(0.0) : float3(1.0);
+  return mix(rgb, target, line_cover * PIXEL_GRID_STRENGTH);
+}
 
 float3 compress_to_headroom(float3 rgb, float headroom) {
   float knee = headroom * HDR_SOFT_KNEE_START;
@@ -776,7 +804,10 @@ fragment float4 polychrome_sprite_fragment(
                              float(atlas_texture.get_height()));
   float2 texel_pos = input.tile_position * atlas_dims;
   float texels_per_pixel = max(length(dfdx(texel_pos)), length(dfdy(texel_pos)));
-  if (sprite.pixelated && texels_per_pixel <= PIXELATED_MAX_TEXELS_PER_PIXEL) {
+  float2 texel_step = fwidth(texel_pos);
+  bool nearest = (sprite.pixelated & PIXELATED_FLAG) != 0u &&
+                 texels_per_pixel <= PIXELATED_MAX_TEXELS_PER_PIXEL;
+  if (nearest) {
     float2 tile_min =
         float2(sprite.tile.bounds.origin.x, sprite.tile.bounds.origin.y) + 0.5;
     float2 tile_max =
@@ -797,6 +828,10 @@ fragment float4 polychrome_sprite_fragment(
     color.r = grayscale;
     color.g = grayscale;
     color.b = grayscale;
+  }
+  if (nearest && (sprite.pixelated & PIXEL_GRID_FLAG) != 0u) {
+    color.rgb = apply_pixel_grid(color.rgb, texel_pos, texel_step, texels_per_pixel,
+                                 (sprite.pixelated & PIXEL_GRID_DARK_FLAG) != 0u);
   }
   color.a *= sprite.opacity * saturate(0.5 - distance);
   return color;

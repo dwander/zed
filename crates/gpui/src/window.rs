@@ -14,7 +14,7 @@ use crate::{
     FilterBoundary, FontId, Global, GlobalElementId, GlyphId, GpuSpecs, Hsla, InputHandler,
     InputPreference, IsZero, KeyBinding, KeyContext, KeyDownEvent, KeyEvent, Keystroke,
     KeystrokeEvent, LayoutId, LineLayoutIndex, Modifiers, ModifiersChangedEvent, MonochromeSprite,
-    MouseButton, MouseEvent, MouseMoveEvent, MouseUpEvent, Path, Pixels, PlatformAtlas,
+    MouseButton, MouseEvent, MouseMoveEvent, MouseUpEvent, Path, PixelGrid, Pixels, PlatformAtlas,
     PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow, Point, PolychromeSprite,
     Priority, PromptButton, PromptLevel, Quad, Render, RenderGlyphParams, RenderImage,
     RenderImageParams, RenderSvgParams, Replay, ResizeEdge, SMOOTH_SVG_SCALE_FACTOR,
@@ -5069,7 +5069,7 @@ impl Window {
 
             self.next_frame.scene.insert_primitive(PolychromeSprite {
                 order: 0,
-                pixelated: false.into(),
+                pixelated: 0,
                 grayscale: false.into(),
                 bounds,
                 corner_radii: Default::default(),
@@ -5165,6 +5165,8 @@ impl Window {
     ///
     /// `pixelated` shows each image pixel as a hard-edged square whenever the image is drawn at
     /// or above its pixel size (see [`PolychromeSprite::pixelated`]); smaller draws are filtered.
+    /// `pixel_grid` adds a grid along the pixel edges at high zoom (see
+    /// [`PolychromeSprite::PIXEL_GRID`]); it needs `pixelated`.
     pub fn paint_image(
         &mut self,
         bounds: Bounds<Pixels>,
@@ -5174,6 +5176,7 @@ impl Window {
         frame_index: usize,
         grayscale: bool,
         pixelated: bool,
+        pixel_grid: PixelGrid,
         transformation: TransformationMatrix,
     ) -> Result<()> {
         self.invalidator.debug_assert_paint();
@@ -5255,7 +5258,7 @@ impl Window {
 
         self.next_frame.scene.insert_primitive(PolychromeSprite {
             order: 0,
-            pixelated: pixelated.into(),
+            pixelated: PolychromeSprite::pixelated_flags(pixelated, pixel_grid),
             grayscale: grayscale.into(),
             bounds: visible_bounds_snapped,
             content_mask,

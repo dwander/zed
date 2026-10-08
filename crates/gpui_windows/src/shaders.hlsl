@@ -100,6 +100,31 @@ static const float3 GRAYSCALE_FACTORS = float3(0.2126f, 0.7152f, 0.0722f);
 // pixelated 스프라이트가 최근접 샘플링으로 넘어가는 문턱 — 화면 픽셀당 텍셀 수. 1.0 이 정확히 100%
 // 인데, 부동소수·bounds 스냅 반올림 오차로 100% 가 살짝 축소로 읽히지 않게 0.5% 여유를 둔다.
 static const float PIXELATED_MAX_TEXELS_PER_PIXEL = 1.005f;
+// PolychromeSprite::pixelated 비트 (scene.rs 와 같은 값).
+static const uint PIXELATED_FLAG = 1u;
+static const uint PIXEL_GRID_FLAG = 2u;
+static const uint PIXEL_GRID_DARK_FLAG = 4u;
+// 픽셀 격자가 나타나기 시작하는/다 나타나는 배율 (텍셀 하나가 덮는 화면 픽셀 수 = 700%·900%).
+// 배율에서 바로 계산하므로 서서히 나타나는 데 애니메이션·추가 프레임이 들지 않는다.
+static const float PIXEL_GRID_FADE_START = 7.0f;
+static const float PIXEL_GRID_FADE_END = 9.0f;
+// 격자선이 픽셀 색을 선 색(흰색 또는 검정) 쪽으로 끌어당기는 세기. 선 색은 사진 한 장에 하나다 —
+// 픽셀마다 고르면 중간 톤 그라데이션에서 선 색이 뒤집히며 비늘처럼 보인다(앱이 사진 밝기로 고른다).
+static const float PIXEL_GRID_STRENGTH = 0.25f;
+
+// 텍셀마다 시작 모서리(왼쪽·위)의 첫 화면 픽셀 한 줄에 격자선을 얹는다. `texel_step` 은 화면 픽셀
+// 하나당 텍셀 이동량(fwidth). 최근접 샘플링은 화면 픽셀 중심이 든 텍셀을 칠하므로 블록 경계가 이미
+// 화면 픽셀 경계에 붙어 있다 — 그 첫 줄을 고르면 소수 배율에서도 선이 번지지 않고 늘 선명한 1px 이다.
+float3 apply_pixel_grid(float3 rgb, float2 texel_pos, float2 texel_step, float texels_per_pixel, bool dark) {
+    float fade = saturate((1.0 / max(texels_per_pixel, 1e-6) - PIXEL_GRID_FADE_START)
+                          / (PIXEL_GRID_FADE_END - PIXEL_GRID_FADE_START));
+    float2 f = frac(texel_pos);
+    float2 px_step = max(texel_step, 1e-6);
+    float2 from_start = f / px_step;          // 이 텍셀의 시작 모서리부터 픽셀 중심까지(화면 px)
+    float line_cover = any(from_start < 1.0) ? fade : 0.0;
+    float3 target = dark ? float3(0.0, 0.0, 0.0) : float3(1.0, 1.0, 1.0);
+    return lerp(rgb, target, line_cover * PIXEL_GRID_STRENGTH);
+}
 
 float4 to_device_position_impl(float2 position) {
     float2 device_position = position / global_viewport_size * float2(2.0, -2.0) + float2(-1.0, 1.0);
@@ -1295,7 +1320,10 @@ float4 polychrome_sprite_fragment(PolychromeSpriteFragmentInput input): SV_Targe
     // 그대로 쓴다. 축소는 위의 선형+밉맵 그대로다. 미분은 분기 **밖**에서 구해야 한다.
     float2 texel_pos = input.tile_position * atlas_size;
     float texels_per_pixel = max(length(ddx(texel_pos)), length(ddy(texel_pos)));
-    if (sprite.pixelated != 0u && texels_per_pixel <= PIXELATED_MAX_TEXELS_PER_PIXEL) {
+    float2 texel_step = fwidth(texel_pos);
+    bool nearest = (sprite.pixelated & PIXELATED_FLAG) != 0u
+        && texels_per_pixel <= PIXELATED_MAX_TEXELS_PER_PIXEL;
+    if (nearest) {
         float2 nearest_uv = clamp((floor(texel_pos) + 0.5) / atlas_size, tile_min, tile_max);
         sample = t_sprite.SampleLevel(s_sprite, nearest_uv, 0);
     }
@@ -1306,6 +1334,10 @@ float4 polychrome_sprite_fragment(PolychromeSpriteFragmentInput input): SV_Targe
     if (sprite.grayscale != 0u) {
         float3 grayscale = dot(color.rgb, GRAYSCALE_FACTORS);
         color = float4(grayscale, sample.a);
+    }
+    if (nearest && (sprite.pixelated & PIXEL_GRID_FLAG) != 0u) {
+        color.rgb = apply_pixel_grid(color.rgb, texel_pos, texel_step, texels_per_pixel,
+                                     (sprite.pixelated & PIXEL_GRID_DARK_FLAG) != 0u);
     }
     color.a *= sprite.opacity * saturate(0.5 - distance);
     return color;

@@ -1036,7 +1036,11 @@ pub struct PolychromeSprite {
     /// device pixel), like CSS `image-rendering: pixelated`. Minified sprites keep the filtered
     /// (mipmapped) path. Occupies the slot that used to be alignment padding, so the GPU layout
     /// is unchanged.
-    pub pixelated: PaddedBool32,
+    ///
+    /// Bit flags: [`Self::PIXELATED`] turns the nearest sampling on, [`Self::PIXEL_GRID`] adds
+    /// a pixel grid on top of it at high zoom (drawn by the shader, so it costs no extra
+    /// primitives), and [`Self::PIXEL_GRID_DARK`] picks dark grid lines over light ones.
+    pub pixelated: u32,
     pub grayscale: PaddedBool32,
     pub opacity: f32,
     pub bounds: Bounds<ScaledPixels>,
@@ -1048,6 +1052,30 @@ pub struct PolychromeSprite {
     /// (crop/straighten UI); the fragment shader keeps its rounded-corner SDF in
     /// untransformed space by interpolating the pre-transform position.
     pub transformation: TransformationMatrix,
+}
+
+impl PolychromeSprite {
+    /// [`Self::pixelated`] bit — nearest sampling while magnified.
+    pub const PIXELATED: u32 = 1;
+    /// [`Self::pixelated`] bit — Photoshop-style grid along the texel edges. Only drawn together
+    /// with [`Self::PIXELATED`]; it fades in between 700% and 900% (device pixels per texel), so
+    /// stepping the zoom never makes it pop.
+    pub const PIXEL_GRID: u32 = 2;
+    /// [`Self::pixelated`] bit — draw the grid with dark lines instead of light ones.
+    pub const PIXEL_GRID_DARK: u32 = 4;
+
+    /// Packs the flags for [`Self::pixelated`]. The grid needs `pixelated`.
+    pub fn pixelated_flags(pixelated: bool, pixel_grid: crate::PixelGrid) -> u32 {
+        if !pixelated {
+            return 0;
+        }
+        Self::PIXELATED
+            | match pixel_grid {
+                crate::PixelGrid::Off => 0,
+                crate::PixelGrid::Light => Self::PIXEL_GRID,
+                crate::PixelGrid::Dark => Self::PIXEL_GRID | Self::PIXEL_GRID_DARK,
+            }
+    }
 }
 
 impl From<PolychromeSprite> for Primitive {

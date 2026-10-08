@@ -126,10 +126,27 @@ where
     }
 }
 
+/// The pixel grid drawn over a magnified [`StyledImage::pixelated`] image, and its line colour.
+///
+/// The colour is one choice for the whole image: picking it per pixel (dark lines on light pixels
+/// and vice versa) flips the line colour across smooth mid-tone gradients and makes them look
+/// scaly. Callers pick it from the image as a whole.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PixelGrid {
+    /// No grid.
+    #[default]
+    Off,
+    /// Light lines, for mostly dark images.
+    Light,
+    /// Dark lines, for mostly light images.
+    Dark,
+}
+
 /// The style of an image element.
 pub struct ImageStyle {
     grayscale: bool,
     pixelated: bool,
+    pixel_grid: PixelGrid,
     object_fit: ObjectFit,
     transformation: Option<Transformation>,
     backdrop: SmallVec<[Background; 2]>,
@@ -142,6 +159,7 @@ impl Default for ImageStyle {
         Self {
             grayscale: false,
             pixelated: false,
+            pixel_grid: PixelGrid::Off,
             object_fit: ObjectFit::Contain,
             transformation: None,
             backdrop: SmallVec::new(),
@@ -167,6 +185,15 @@ pub trait StyledImage: Sized {
     /// `image-rendering: pixelated`. Drawing it smaller than its pixel size stays filtered.
     fn pixelated(mut self, pixelated: bool) -> Self {
         self.image_style().pixelated = pixelated;
+        self
+    }
+
+    /// Draw a grid along the pixel edges once a [`Self::pixelated`] image is zoomed far enough
+    /// in for single pixels to be told apart (fades in between 700% and 900%). Drawn by the
+    /// image shader itself, so it adds no elements or primitives. No effect without `pixelated`.
+    /// The line colour is one choice for the whole image (see [`PixelGrid`]).
+    fn pixel_grid(mut self, pixel_grid: PixelGrid) -> Self {
+        self.image_style().pixel_grid = pixel_grid;
         self
     }
 
@@ -559,6 +586,7 @@ impl Element for Img {
                             layout_state.frame_index,
                             self.style.grayscale,
                             self.style.pixelated,
+                            self.style.pixel_grid,
                             transformation,
                         )
                         .log_err();
