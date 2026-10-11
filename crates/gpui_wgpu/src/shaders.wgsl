@@ -98,9 +98,13 @@ struct GammaParams {
 
 const M_PI_F: f32 = 3.1415926;
 const GRAYSCALE_FACTORS: vec3<f32> = vec3<f32>(0.2126, 0.7152, 0.0722);
-// Texels per device pixel at or below which a pixelated sprite switches to nearest sampling.
-// 1.0 is exactly 1:1; the slack keeps float/bounds-snapping error from reading 100% as minified.
-const PIXELATED_MAX_TEXELS_PER_PIXEL: f32 = 1.005;
+// Zoom at which a pixelated sprite switches to nearest sampling, measured in texels per device
+// pixel (1.0 = 100%, 0.5 = 200%). Exactly 100% is 1:1, so nearest is the original itself. Between
+// that and 200% one texel covers one and two device pixels by turns and lines look jagged, so those
+// zooms stay interpolated; nearest takes over from 200%.
+const PIXELATED_MAGNIFIED_TEXELS_PER_PIXEL: f32 = 0.5;
+// 0.5% slack so float/bounds-snapping error near 100% and 200% lands on the intended side.
+const PIXELATED_SLACK: f32 = 1.005;
 // PolychromeSprite::pixelated bits (same values as scene.rs).
 const PIXELATED_FLAG: u32 = 1u;
 const PIXEL_GRID_FLAG: u32 = 2u;
@@ -1298,6 +1302,12 @@ fn apply_pixel_grid(rgb: vec3<f32>, texel_pos: vec2<f32>, texel_step: vec2<f32>,
     return mix(rgb, target_rgb, line_cover * PIXEL_GRID_STRENGTH);
 }
 
+// Whether a pixelated sprite takes the nearest texel at this zoom — exactly 100%, or 200% and up.
+fn pixelated_nearest(texels_per_pixel: f32) -> bool {
+    let at_native = texels_per_pixel <= PIXELATED_SLACK && texels_per_pixel * PIXELATED_SLACK >= 1.0;
+    return at_native || texels_per_pixel <= PIXELATED_MAGNIFIED_TEXELS_PER_PIXEL * PIXELATED_SLACK;
+}
+
 struct PolychromeSprite {
     order: u32,
     pixelated: u32,
@@ -1348,10 +1358,10 @@ fn fs_poly_sprite(input: PolySpriteVarying) -> @location(0) vec4<f32> {
     }
 
     let sprite = load_poly_sprite(input.sprite_id);
-    // Pixelated: while magnified, take the nearest texel as-is instead of interpolating.
-    // Minified sprites keep the filtered sample above.
+    // Pixelated: at 100% and from 200% up, take the nearest texel as-is instead of interpolating
+    // (`pixelated_nearest`). Minified sprites and the zooms in between keep the filtered sample above.
     let nearest_on = (sprite.pixelated & PIXELATED_FLAG) != 0u
-        && texels_per_pixel <= PIXELATED_MAX_TEXELS_PER_PIXEL;
+        && pixelated_nearest(texels_per_pixel);
     if (nearest_on) {
         let tile_min = vec2<f32>(sprite.tile.bounds.origin) + 0.5;
         let tile_max = vec2<f32>(sprite.tile.bounds.origin + sprite.tile.bounds.size) - 0.5;

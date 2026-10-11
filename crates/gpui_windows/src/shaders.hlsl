@@ -97,9 +97,13 @@ struct TransformationMatrix {
 
 static const float M_PI_F = 3.141592653f;
 static const float3 GRAYSCALE_FACTORS = float3(0.2126f, 0.7152f, 0.0722f);
-// pixelated 스프라이트가 최근접 샘플링으로 넘어가는 문턱 — 화면 픽셀당 텍셀 수. 1.0 이 정확히 100%
-// 인데, 부동소수·bounds 스냅 반올림 오차로 100% 가 살짝 축소로 읽히지 않게 0.5% 여유를 둔다.
-static const float PIXELATED_MAX_TEXELS_PER_PIXEL = 1.005f;
+// pixelated 스프라이트가 최근접 샘플링으로 넘어가는 배율 — 화면 픽셀당 텍셀 수로 잰다(1.0 = 100%,
+// 0.5 = 200%). 정확히 100% 는 텍셀과 화면 픽셀이 1:1 이라 최근접이 곧 원본이다. 그 위 200% 미만은
+// 텍셀 하나가 화면 픽셀 1칸·2칸을 번갈아 덮어 선이 계단처럼 깨져 보이므로 보간으로 두고, 200% 부터
+// 최근접으로 넘어간다.
+static const float PIXELATED_MAGNIFIED_TEXELS_PER_PIXEL = 0.5f;
+// 부동소수·bounds 스냅 반올림 오차로 100%·200% 가 살짝 어긋나 읽혀도 같은 쪽에 들게 두는 0.5% 여유.
+static const float PIXELATED_SLACK = 1.005f;
 // PolychromeSprite::pixelated 비트 (scene.rs 와 같은 값).
 static const uint PIXELATED_FLAG = 1u;
 static const uint PIXEL_GRID_FLAG = 2u;
@@ -124,6 +128,12 @@ float3 apply_pixel_grid(float3 rgb, float2 texel_pos, float2 texel_step, float t
     float line_cover = any(from_start < 1.0) ? fade : 0.0;
     float3 target = dark ? float3(0.0, 0.0, 0.0) : float3(1.0, 1.0, 1.0);
     return lerp(rgb, target, line_cover * PIXEL_GRID_STRENGTH);
+}
+
+// pixelated 스프라이트를 최근접 텍셀로 그릴 배율인가 — 정확히 100% 이거나 200% 이상.
+bool pixelated_nearest(float texels_per_pixel) {
+    bool at_native = texels_per_pixel <= PIXELATED_SLACK && texels_per_pixel * PIXELATED_SLACK >= 1.0;
+    return at_native || texels_per_pixel <= PIXELATED_MAGNIFIED_TEXELS_PER_PIXEL * PIXELATED_SLACK;
 }
 
 float4 to_device_position_impl(float2 position) {
@@ -1316,13 +1326,14 @@ float4 polychrome_sprite_fragment(PolychromeSpriteFragmentInput input): SV_Targe
 
     float4 sample = t_sprite.Sample(s_sprite, clamped_uv);
 
-    // pixelated — 확대(텍셀 하나가 화면 픽셀 하나 이상을 덮음) 중에는 보간 없이 가장 가까운 텍셀을
-    // 그대로 쓴다. 축소는 위의 선형+밉맵 그대로다. 미분은 분기 **밖**에서 구해야 한다.
+    // pixelated — 100% 와 200% 이상에서는 보간 없이 가장 가까운 텍셀을 그대로 쓴다
+    // (`pixelated_nearest`). 축소와 그 사이 배율은 위의 선형+밉맵 그대로다. 미분은 분기 **밖**에서
+    // 구해야 한다.
     float2 texel_pos = input.tile_position * atlas_size;
     float texels_per_pixel = max(length(ddx(texel_pos)), length(ddy(texel_pos)));
     float2 texel_step = fwidth(texel_pos);
     bool nearest = (sprite.pixelated & PIXELATED_FLAG) != 0u
-        && texels_per_pixel <= PIXELATED_MAX_TEXELS_PER_PIXEL;
+        && pixelated_nearest(texels_per_pixel);
     if (nearest) {
         float2 nearest_uv = clamp((floor(texel_pos) + 0.5) / atlas_size, tile_min, tile_max);
         sample = t_sprite.SampleLevel(s_sprite, nearest_uv, 0);

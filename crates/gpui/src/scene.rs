@@ -1032,9 +1032,10 @@ impl From<SubpixelSprite> for Primitive {
 #[expect(missing_docs)]
 pub struct PolychromeSprite {
     pub order: DrawOrder,
-    /// Nearest-neighbour sampling while the sprite is magnified (one texel covers at least one
-    /// device pixel), like CSS `image-rendering: pixelated`. Minified sprites keep the filtered
-    /// (mipmapped) path. Occupies the slot that used to be alignment padding, so the GPU layout
+    /// Nearest-neighbour sampling at 1:1 and from 2× magnification up (one texel covers at least
+    /// two device pixels), like CSS `image-rendering: pixelated`. Minified sprites and the zooms
+    /// between 1× and 2× (where texels would cover one and two device pixels by turns and lines
+    /// look jagged) keep the filtered (mipmapped) path. Occupies the slot that used to be alignment padding, so the GPU layout
     /// is unchanged.
     ///
     /// Bit flags: [`Self::PIXELATED`] turns the nearest sampling on, [`Self::PIXEL_GRID`] adds
@@ -1055,7 +1056,7 @@ pub struct PolychromeSprite {
 }
 
 impl PolychromeSprite {
-    /// [`Self::pixelated`] bit — nearest sampling while magnified.
+    /// [`Self::pixelated`] bit — nearest sampling at 1:1 and from 2× magnification up.
     pub const PIXELATED: u32 = 1;
     /// [`Self::pixelated`] bit — Photoshop-style grid along the texel edges. Only drawn together
     /// with [`Self::PIXELATED`]; it fades in between 700% and 900% (device pixels per texel), so

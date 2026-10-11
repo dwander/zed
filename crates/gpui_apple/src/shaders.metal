@@ -744,9 +744,13 @@ float3 linear_to_extended_srgb(float3 l) {
 // hue is preserved. Headroom 1.0 (no EDR) compresses everything into SDR.
 constant float HDR_SOFT_KNEE_START = 0.8;
 
-// Texels per device pixel at or below which a pixelated sprite switches to nearest sampling.
-// 1.0 is exactly 1:1; the slack keeps float/bounds-snapping error from reading 100% as minified.
-constant float PIXELATED_MAX_TEXELS_PER_PIXEL = 1.005;
+// Zoom at which a pixelated sprite switches to nearest sampling, measured in texels per device
+// pixel (1.0 = 100%, 0.5 = 200%). Exactly 100% is 1:1, so nearest is the original itself. Between
+// that and 200% one texel covers one and two device pixels by turns and lines look jagged, so those
+// zooms stay interpolated; nearest takes over from 200%.
+constant float PIXELATED_MAGNIFIED_TEXELS_PER_PIXEL = 0.5;
+// 0.5% slack so float/bounds-snapping error near 100% and 200% lands on the intended side.
+constant float PIXELATED_SLACK = 1.005;
 // PolychromeSprite::pixelated bits (same values as scene.rs).
 constant uint PIXELATED_FLAG = 1u;
 constant uint PIXEL_GRID_FLAG = 2u;
@@ -776,6 +780,12 @@ float3 apply_pixel_grid(float3 rgb, float2 texel_pos, float2 texel_step,
   return mix(rgb, target, line_cover * PIXEL_GRID_STRENGTH);
 }
 
+// Whether a pixelated sprite takes the nearest texel at this zoom — exactly 100%, or 200% and up.
+bool pixelated_nearest(float texels_per_pixel) {
+  bool at_native = texels_per_pixel <= PIXELATED_SLACK && texels_per_pixel * PIXELATED_SLACK >= 1.0;
+  return at_native || texels_per_pixel <= PIXELATED_MAGNIFIED_TEXELS_PER_PIXEL * PIXELATED_SLACK;
+}
+
 float3 compress_to_headroom(float3 rgb, float headroom) {
   float knee = headroom * HDR_SOFT_KNEE_START;
   float range = headroom - knee;
@@ -798,15 +808,16 @@ fragment float4 polychrome_sprite_fragment(
                                           min_filter::linear);
   float4 sample =
       atlas_texture.sample(atlas_texture_sampler, input.tile_position);
-  // Pixelated: while magnified, take the nearest texel as-is instead of interpolating.
-  // Minified sprites keep the filtered sample above. Derivatives stay outside the branch.
+  // Pixelated: at 100% and from 200% up, take the nearest texel as-is instead of interpolating
+  // (`pixelated_nearest`). Minified sprites and the zooms in between keep the filtered sample
+  // above. Derivatives stay outside the branch.
   float2 atlas_dims = float2(float(atlas_texture.get_width()),
                              float(atlas_texture.get_height()));
   float2 texel_pos = input.tile_position * atlas_dims;
   float texels_per_pixel = max(length(dfdx(texel_pos)), length(dfdy(texel_pos)));
   float2 texel_step = fwidth(texel_pos);
   bool nearest = (sprite.pixelated & PIXELATED_FLAG) != 0u &&
-                 texels_per_pixel <= PIXELATED_MAX_TEXELS_PER_PIXEL;
+                 pixelated_nearest(texels_per_pixel);
   if (nearest) {
     float2 tile_min =
         float2(sprite.tile.bounds.origin.x, sprite.tile.bounds.origin.y) + 0.5;

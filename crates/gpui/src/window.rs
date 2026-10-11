@@ -5163,8 +5163,9 @@ impl Window {
     /// equal rects (e.g. `ObjectFit::Fill`) when rotating, or the sub-tiling below will slice
     /// the image along unrotated axes.
     ///
-    /// `pixelated` shows each image pixel as a hard-edged square whenever the image is drawn at
-    /// or above its pixel size (see [`PolychromeSprite::pixelated`]); smaller draws are filtered.
+    /// `pixelated` shows each image pixel as a hard-edged square when the image is drawn at its
+    /// pixel size or at twice it and beyond (see [`PolychromeSprite::pixelated`]); other draws
+    /// are filtered.
     /// `pixel_grid` adds a grid along the pixel edges at high zoom (see
     /// [`PolychromeSprite::PIXEL_GRID`]); it needs `pixelated`.
     pub fn paint_image(

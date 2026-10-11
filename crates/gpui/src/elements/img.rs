@@ -180,9 +180,10 @@ pub trait StyledImage: Sized {
         self
     }
 
-    /// Show each image pixel as a hard-edged square whenever the image is drawn at or above
-    /// its pixel size, instead of interpolating between pixels — like CSS
-    /// `image-rendering: pixelated`. Drawing it smaller than its pixel size stays filtered.
+    /// Show each image pixel as a hard-edged square instead of interpolating between pixels —
+    /// like CSS `image-rendering: pixelated` — when the image is drawn at exactly its pixel size
+    /// or at twice it and beyond. Zooms in between stay filtered (one pixel would cover one and
+    /// two screen pixels by turns, so lines look jagged), as does drawing it smaller.
     fn pixelated(mut self, pixelated: bool) -> Self {
         self.image_style().pixelated = pixelated;
         self
