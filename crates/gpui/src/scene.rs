@@ -1092,7 +1092,7 @@ pub struct PaintSurface {
     pub bounds: Bounds<ScaledPixels>,
     pub content_mask: ContentMask<ScaledPixels>,
     #[cfg(any(target_os = "macos", target_os = "ios"))]
-    pub image_buffer: core_video::pixel_buffer::CVPixelBuffer,
+    pub image_buffer: objc2_core_foundation::CFRetained<objc2_core_video::CVPixelBuffer>,
     #[cfg(any(target_os = "linux", target_os = "freebsd"))]
     pub texture: std::sync::Arc<dyn std::any::Any + Send + Sync>,
     #[cfg(any(target_os = "linux", target_os = "freebsd"))]
