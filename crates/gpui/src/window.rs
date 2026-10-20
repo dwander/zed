@@ -5297,7 +5297,7 @@ impl Window {
         let params = RenderImageParams {
             image_id: data.id,
             frame_index,
-            hdr: data.is_hdr(),
+            hdr: data.is_half_float(),
         };
 
         let tile = self
@@ -5363,7 +5363,8 @@ impl Window {
 
         self.next_frame.scene.insert_primitive(PolychromeSprite {
             order: 0,
-            pixelated: PolychromeSprite::pixelated_flags(pixelated, pixel_grid),
+            pixelated: PolychromeSprite::pixelated_flags(pixelated, pixel_grid)
+                | if data.is_wide_gamut() { PolychromeSprite::WIDE_GAMUT } else { 0 },
             grayscale: grayscale.into(),
             bounds: visible_bounds_snapped,
             content_mask,
@@ -5404,7 +5405,7 @@ impl Window {
             let params = RenderImageParams {
                 image_id: data.id,
                 frame_index,
-                hdr: data.is_hdr(),
+                hdr: data.is_half_float(),
             };
 
             self.sprite_atlas.remove(&params.clone().into());
@@ -5422,7 +5423,7 @@ impl Window {
                     &RenderImageParams {
                         image_id: data.id,
                         frame_index,
-                        hdr: data.is_hdr(),
+                        hdr: data.is_half_float(),
                     }
                     .into(),
                 )

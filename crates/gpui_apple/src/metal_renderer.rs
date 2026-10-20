@@ -2262,6 +2262,7 @@ enum SpriteInputIndex {
 /// shader. `is_hdr` is 1.0 when the batch samples an `AtlasTextureKind::PolychromeHdr` texture:
 /// the shader then soft-clips values above `headroom` (the display's *current* EDR headroom, in
 /// multiples of SDR white) so highlights roll off instead of being clipped by the compositor.
+/// Wide-gamut sprites (`PolychromeSprite::WIDE_GAMUT`) share that texture kind but skip the clip.
 /// Decoding once for the display's potential headroom and compressing per frame here is what
 /// keeps brightness changes flicker-free — no re-decode is needed when the headroom moves.
 #[repr(C)]

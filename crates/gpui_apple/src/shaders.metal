@@ -755,6 +755,8 @@ constant float PIXELATED_SLACK = 1.005;
 constant uint PIXELATED_FLAG = 1u;
 constant uint PIXEL_GRID_FLAG = 2u;
 constant uint PIXEL_GRID_DARK_FLAG = 4u;
+// Wide-gamut SDR in a float texture: values outside 0..1 are colours, not highlights — no soft clip.
+constant uint WIDE_GAMUT_FLAG = 8u;
 // Zoom (device pixels per texel) where the pixel grid starts to fade in / is fully shown
 // (700% / 900%). Computed from the zoom itself, so the fade needs no animation or extra frames.
 constant float PIXEL_GRID_FADE_START = 7.0;
@@ -831,7 +833,7 @@ fragment float4 polychrome_sprite_fragment(
       quad_sdf(input.local_position, sprite.bounds, sprite.corner_radii);
 
   float4 color = sample;
-  if (hdr.is_hdr > 0.5) {
+  if (hdr.is_hdr > 0.5 && (sprite.pixelated & WIDE_GAMUT_FLAG) == 0u) {
     color.rgb = compress_to_headroom(color.rgb, hdr.headroom);
   }
   if (sprite.grayscale) {

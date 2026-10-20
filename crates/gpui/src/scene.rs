@@ -1041,6 +1041,8 @@ pub struct PolychromeSprite {
     /// Bit flags: [`Self::PIXELATED`] turns the nearest sampling on, [`Self::PIXEL_GRID`] adds
     /// a pixel grid on top of it at high zoom (drawn by the shader, so it costs no extra
     /// primitives), and [`Self::PIXEL_GRID_DARK`] picks dark grid lines over light ones.
+    /// [`Self::WIDE_GAMUT`] rides along in the same word (it is not about sampling) so the GPU
+    /// layout stays unchanged.
     pub pixelated: u32,
     pub tile: AtlasTile,
     pub grayscale: PaddedBool32,
@@ -1064,6 +1066,10 @@ impl PolychromeSprite {
     pub const PIXEL_GRID: u32 = 2;
     /// [`Self::pixelated`] bit — draw the grid with dark lines instead of light ones.
     pub const PIXEL_GRID_DARK: u32 = 4;
+    /// [`Self::pixelated`] bit — the float texture holds wide-gamut SDR colour
+    /// ([`crate::RenderImage::new_wide_gamut`]), not HDR highlights: skip the EDR headroom soft
+    /// clip. Backends without that soft clip ignore it.
+    pub const WIDE_GAMUT: u32 = 8;
 
     /// Packs the flags for [`Self::pixelated`]. The grid needs `pixelated`.
     pub fn pixelated_flags(pixelated: bool, pixel_grid: crate::PixelGrid) -> u32 {
