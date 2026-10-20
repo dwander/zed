@@ -1243,10 +1243,10 @@ fn fs_underline(input: UnderlineVarying) -> @location(0) vec4<f32> {
 struct MonochromeSprite {
     order: u32,
     pad: u32,
+    tile: AtlasTile,
     bounds: Bounds,
     content_mask: Bounds,
     color: Hsla,
-    tile: AtlasTile,
     transformation: TransformationMatrix,
 }
 
@@ -1311,12 +1311,12 @@ fn pixelated_nearest(texels_per_pixel: f32) -> bool {
 struct PolychromeSprite {
     order: u32,
     pixelated: u32,
+    tile: AtlasTile,
     grayscale: u32,
     opacity: f32,
     bounds: Bounds,
     content_mask: Bounds,
     corner_radii: Corners,
-    tile: AtlasTile,
     transformation: TransformationMatrix,
 }
 

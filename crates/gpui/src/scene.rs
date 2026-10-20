@@ -276,11 +276,11 @@ impl Scene {
         self.paths.sort_by_key(|path| path.order);
         self.underlines.sort_by_key(|underline| underline.order);
         self.monochrome_sprites
-            .sort_by_key(|sprite| (sprite.order, sprite.tile.tile_id));
+            .sort_by_key(|sprite| (sprite.order, sprite.tile.texture_id.index));
         self.subpixel_sprites
-            .sort_by_key(|sprite| (sprite.order, sprite.tile.tile_id));
+            .sort_by_key(|sprite| (sprite.order, sprite.tile.texture_id.index));
         self.polychrome_sprites
-            .sort_by_key(|sprite| (sprite.order, sprite.tile.tile_id));
+            .sort_by_key(|sprite| (sprite.order, sprite.tile.texture_id.index));
         self.surfaces.sort_by_key(|surface| surface.order);
         self.backdrop_filters.sort_by_key(|filter| filter.order);
         // Markers normally get distinct, monotonically-increasing orders (children overlap
@@ -995,10 +995,10 @@ impl Default for TransformationMatrix {
 pub struct MonochromeSprite {
     pub order: DrawOrder,
     pub pad: u32,
+    pub tile: AtlasTile,
     pub bounds: Bounds<ScaledPixels>,
     pub content_mask: ContentMask<ScaledPixels>,
     pub color: Hsla,
-    pub tile: AtlasTile,
     pub transformation: TransformationMatrix,
 }
 
@@ -1014,10 +1014,10 @@ impl From<MonochromeSprite> for Primitive {
 pub struct SubpixelSprite {
     pub order: DrawOrder,
     pub pad: u32, // align to 8 bytes
+    pub tile: AtlasTile,
     pub bounds: Bounds<ScaledPixels>,
     pub content_mask: ContentMask<ScaledPixels>,
     pub color: Hsla,
-    pub tile: AtlasTile,
     pub transformation: TransformationMatrix,
 }
 
@@ -1042,12 +1042,12 @@ pub struct PolychromeSprite {
     /// a pixel grid on top of it at high zoom (drawn by the shader, so it costs no extra
     /// primitives), and [`Self::PIXEL_GRID_DARK`] picks dark grid lines over light ones.
     pub pixelated: u32,
+    pub tile: AtlasTile,
     pub grayscale: PaddedBool32,
     pub opacity: f32,
     pub bounds: Bounds<ScaledPixels>,
     pub content_mask: ContentMask<ScaledPixels>,
     pub corner_radii: Corners<ScaledPixels>,
-    pub tile: AtlasTile,
     /// Rotation/scale applied around the sprite's bounds (unit = no transform).
     /// Mirrors [`MonochromeSprite::transformation`] so raster images can be rotated
     /// (crop/straighten UI); the fragment shader keeps its rounded-corner SDF in

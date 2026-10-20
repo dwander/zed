@@ -49,6 +49,7 @@ fn scale_about(
 use image::RgbaImage;
 use objc2::runtime::AnyObject;
 
+use core_graphics::color_space::{CGColorSpace, kCGColorSpaceDisplayP3};
 use foreign_types::{ForeignType, ForeignTypeRef};
 use metal::{
     CAMetalLayer, CommandQueue, MTLGPUFamily, MTLPixelFormat, MTLResourceOptions, NSRange,
@@ -93,8 +94,9 @@ pub unsafe fn new_renderer(
     _native_view: *mut c_void,
     _bounds: gpui::Size<f32>,
     transparent: bool,
+    use_display_p3: bool,
 ) -> Renderer {
-    MetalRenderer::new(context, transparent)
+    MetalRenderer::new(context, transparent, use_display_p3)
 }
 
 pub struct InstanceBufferPool {
@@ -270,10 +272,14 @@ pub struct PathRasterizationVertex {
 
 impl MetalRenderer {
     /// Creates a new MetalRenderer with a CAMetalLayer for window-based rendering.
-    pub fn new(instance_buffer_pool: Arc<Mutex<InstanceBufferPool>>, transparent: bool) -> Self {
+    pub fn new(
+        instance_buffer_pool: Arc<Mutex<InstanceBufferPool>>,
+        transparent: bool,
+        use_display_p3: bool,
+    ) -> Self {
         let device = Self::create_device();
         let layer = metal::MetalLayer::new();
-        Self::configure_layer(&layer, &device, transparent);
+        Self::configure_layer(&layer, &device, transparent, use_display_p3);
         Self::new_internal(device, Some(layer), !transparent, instance_buffer_pool)
     }
 
@@ -292,13 +298,38 @@ impl MetalRenderer {
             metal::MetalLayerRef::from_ptr(ptr::from_ref(layer).cast_mut().cast::<CAMetalLayer>())
         }
         .to_owned();
-        Self::configure_layer(&layer, &device, transparent);
+        Self::configure_layer(&layer, &device, transparent, false);
         Self::new_internal(device, Some(layer), !transparent, instance_buffer_pool)
     }
 
-    fn configure_layer(layer: &metal::MetalLayerRef, device: &metal::DeviceRef, transparent: bool) {
+    fn configure_layer(
+        layer: &metal::MetalLayerRef,
+        device: &metal::DeviceRef,
+        transparent: bool,
+        use_display_p3: bool,
+    ) {
         layer.set_device(device);
         layer.set_pixel_format(RENDER_TARGET_FORMAT);
+        // metal-rs doesn't bind these setters, so view the same object through
+        // objc2's typed CAMetalLayer binding.
+        let objc2_layer: &objc2_quartz_core::CAMetalLayer = unsafe { &*layer.as_ptr().cast() };
+        if use_display_p3 {
+            // SAFETY: The constant is extern, from Core Graphics
+            let display_p3_name = unsafe { kCGColorSpaceDisplayP3 };
+            if let Some(display_p3_color_space) = CGColorSpace::create_with_name(display_p3_name) {
+                // SAFETY: `layer` is a CAMetalLayer and the color space remains valid for the call.
+                // 'metal-rs' does not expose CAMetalLayer's typed `colorspace` setter.
+                // Could be replaced with a native binding via objc2-* in future
+                unsafe {
+                    let _: () = objc2::msg_send![
+                        objc2_layer,
+                        setColorspace: display_p3_color_space.as_ptr().cast::<c_void>()
+                    ];
+                }
+            } else {
+                log::error!("unable to create the Display P3 color space");
+            }
+        }
         // Support direct-to-display rendering if the window is not transparent
         // https://developer.apple.com/documentation/metal/managing-your-game-window-for-metal-in-macos
         layer.set_opaque(!transparent);
@@ -308,22 +339,22 @@ impl MetalRenderer {
         // presentation cost, even when `test-support` is compiled in.
         #[cfg(all(feature = "test-support", debug_assertions))]
         layer.set_framebuffer_only(false);
-        // metal-rs doesn't bind these setters, so view the same object through
-        // objc2's typed CAMetalLayer binding.
-        let objc2_layer: &objc2_quartz_core::CAMetalLayer = unsafe { &*layer.as_ptr().cast() };
         objc2_layer.setAllowsNextDrawableTimeout(false);
         objc2_layer.setNeedsDisplayOnBoundsChange(true);
         // A float layer with no colorspace is composited as *linear* — every sRGB-encoded value the
         // shaders write would be shown washed out. Extended sRGB keeps 0..1 exactly as the 8-bit
-        // (sRGB) layer showed them and lets values above 1.0 through as EDR.
-        unsafe {
-            let colorspace = crate::cg_colorspace::extended_srgb();
-            if !colorspace.is_null() {
-                let _: () = objc2::msg_send![
-                    objc2_layer,
-                    setColorspace: crate::cg_colorspace::ColorSpaceArg(colorspace)
-                ];
-                crate::cg_colorspace::release(colorspace);
+        // (sRGB) layer showed them and lets values above 1.0 through as EDR. `use_display_p3` keeps
+        // the (non-extended) Display P3 space set above instead, so values above 1.0 clip there.
+        if !use_display_p3 {
+            unsafe {
+                let colorspace = crate::cg_colorspace::extended_srgb();
+                if !colorspace.is_null() {
+                    let _: () = objc2::msg_send![
+                        objc2_layer,
+                        setColorspace: crate::cg_colorspace::ColorSpaceArg(colorspace)
+                    ];
+                    crate::cg_colorspace::release(colorspace);
+                }
             }
         }
         // UIKit sizes a view's backing layer itself; only AppKit-hosted
@@ -1926,10 +1957,6 @@ fn build_pipeline_state(
     color_attachment.set_source_rgb_blend_factor(metal::MTLBlendFactor::SourceAlpha);
     color_attachment.set_source_alpha_blend_factor(metal::MTLBlendFactor::One);
     color_attachment.set_destination_rgb_blend_factor(metal::MTLBlendFactor::OneMinusSourceAlpha);
-    // Standard "over" for alpha (a = sa + da·(1 − sa)). With `One` the alpha of overlapping
-    // layers simply added up; the 8-bit unorm target clamped that at 1, but the float target keeps
-    // 3, 5, … — and anything that later blends against that alpha (the backdrop-blur composite
-    // multiplies the sampled scene alpha) goes negative and renders as a negative image.
     color_attachment.set_destination_alpha_blend_factor(metal::MTLBlendFactor::OneMinusSourceAlpha);
 
     device
@@ -1964,10 +1991,6 @@ fn build_path_sprite_pipeline_state(
     color_attachment.set_source_rgb_blend_factor(metal::MTLBlendFactor::One);
     color_attachment.set_source_alpha_blend_factor(metal::MTLBlendFactor::One);
     color_attachment.set_destination_rgb_blend_factor(metal::MTLBlendFactor::OneMinusSourceAlpha);
-    // Standard "over" for alpha (a = sa + da·(1 − sa)). With `One` the alpha of overlapping
-    // layers simply added up; the 8-bit unorm target clamped that at 1, but the float target keeps
-    // 3, 5, … — and anything that later blends against that alpha (the backdrop-blur composite
-    // multiplies the sampled scene alpha) goes negative and renders as a negative image.
     color_attachment.set_destination_alpha_blend_factor(metal::MTLBlendFactor::OneMinusSourceAlpha);
 
     device
