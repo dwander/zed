@@ -43,6 +43,7 @@ mod shader_compilation {
             "blur_downsample",
             "blur",
             "blur_composite",
+            "hdr_output",
         ];
 
         let rust_binding_path = format!("{}/shaders_bytes.rs", out_dir);

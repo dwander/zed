@@ -1106,6 +1106,13 @@ impl PlatformWindow for WindowsWindow {
             .log_err();
     }
 
+    fn set_hdr_content(&self, enabled: bool, headroom: f32) {
+        self.state
+            .renderer
+            .borrow_mut()
+            .set_hdr_content(enabled, headroom);
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     fn render_to_image(&self, scene: &Scene) -> anyhow::Result<image::RgbaImage> {
         self.state

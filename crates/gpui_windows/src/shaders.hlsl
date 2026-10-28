@@ -6,7 +6,12 @@ cbuffer GlobalParams: register(b0) {
     float grayscale_enhanced_contrast;
     float subpixel_enhanced_contrast;
     uint is_bgr;
-    uint3 global_pad;
+    // Display headroom (multiples of SDR white) HDR sprites are soft-clipped into; 1.0 on an SDR
+    // target, which compresses them into SDR.
+    float hdr_headroom;
+    // scRGB value of SDR white (SDR white nits / 80) — the HDR output pass scales by it.
+    float hdr_output_scale;
+    uint global_pad;
 };
 
 cbuffer BatchParams: register(b1) {
@@ -108,6 +113,10 @@ static const float PIXELATED_SLACK = 1.005f;
 static const uint PIXELATED_FLAG = 1u;
 static const uint PIXEL_GRID_FLAG = 2u;
 static const uint PIXEL_GRID_DARK_FLAG = 4u;
+// Wide-gamut SDR in a float texture: values outside 0..1 are colours, not highlights — no soft clip.
+static const uint WIDE_GAMUT_FLAG = 8u;
+// AtlasTextureKind::PolychromeHdr — the RGBA16F atlas HDR and wide-gamut images live in.
+static const uint ATLAS_KIND_POLYCHROME_HDR = 3u;
 // 픽셀 격자가 나타나기 시작하는/다 나타나는 배율 (텍셀 하나가 덮는 화면 픽셀 수 = 700%·900%).
 // 배율에서 바로 계산하므로 서서히 나타나는 데 애니메이션·추가 프레임이 들지 않는다.
 static const float PIXEL_GRID_FADE_START = 7.0f;
@@ -171,6 +180,38 @@ float3 linear_to_srgb(float3 color) {
 // Convert sRGB to linear RGB
 float3 srgb_to_linear(float3 color) {
     return pow(color, float3(2.2, 2.2, 2.2));
+}
+
+// Extended sRGB transfer (exact piecewise curve, continued above 1.0, sign-symmetric) — the
+// pow(2.2) helpers above are only an SDR approximation. Same as the Metal shaders.
+float3 extended_srgb_to_linear(float3 v) {
+    float3 a = abs(v);
+    float3 l = a <= 0.04045 ? a / 12.92 : pow((a + 0.055) / 1.055, 2.4);
+    return sign(v) * l;
+}
+
+float3 linear_to_extended_srgb(float3 l) {
+    float3 a = abs(l);
+    float3 v = a <= 0.0031308 ? a * 12.92 : 1.055 * pow(a, 1.0 / 2.4) - 0.055;
+    return sign(l) * v;
+}
+
+// Soft-clip an HDR (extended sRGB) colour into the display's current headroom: from 80% of the
+// headroom up, an exponential knee approaches the headroom asymptotically. Scaled by the max
+// channel so hue is preserved. Headroom 1.0 (SDR output) compresses everything into SDR. Same
+// curve as the Metal shaders.
+static const float HDR_SOFT_KNEE_START = 0.8;
+
+float3 compress_to_headroom(float3 rgb, float headroom) {
+    float knee = headroom * HDR_SOFT_KNEE_START;
+    float range = headroom - knee;
+    float3 lin = extended_srgb_to_linear(rgb);
+    float m = max(lin.r, max(lin.g, lin.b));
+    if (m <= knee || range <= 0.0) {
+        return rgb;
+    }
+    float squashed = knee + range * (1.0 - exp(-(m - knee) / range));
+    return linear_to_extended_srgb(lin * (squashed / m));
 }
 
 /// Hsla to linear RGBA conversion.
@@ -1342,6 +1383,10 @@ float4 polychrome_sprite_fragment(PolychromeSpriteFragmentInput input): SV_Targe
     float distance = quad_sdf(input.local_position, sprite.bounds, sprite.corner_radii);
 
     float4 color = sample;
+    if (sprite.tile.texture_id.kind == ATLAS_KIND_POLYCHROME_HDR
+        && (sprite.pixelated & WIDE_GAMUT_FLAG) == 0u) {
+        color.rgb = compress_to_headroom(color.rgb, hdr_headroom);
+    }
     if (sprite.grayscale != 0u) {
         float3 grayscale = dot(color.rgb, GRAYSCALE_FACTORS);
         color = float4(grayscale, sample.a);
@@ -1488,4 +1533,29 @@ float4 blur_composite_fragment(BlurCompositeFragmentInput input): SV_Target {
     // its subtree (so the target shows through there instead of darkening).
     float a = coverage * blur_opacity;
     return float4(blurred.rgb * a, blurred.a * a);
+}
+
+/*
+**
+**              HDR output (scRGB)
+**
+** While a window outputs HDR, the scene is drawn into an FP16 target exactly as it would be drawn
+** into the 8-bit swap chain — sRGB-encoded, premultiplied — so blending, text gamma and blur stay
+** as tuned. This pass re-encodes it for the FP16 scRGB swap chain: linear light, 1.0 = 80 nits.
+** SDR white lands on `hdr_output_scale` (the user's SDR content brightness), so UI matches the
+** other windows; HDR sprite values above 1.0 come out brighter than SDR white.
+*/
+
+BlurVertexOutput hdr_output_vertex(uint vertex_id: SV_VertexID) {
+    return blur_fullscreen(vertex_id);
+}
+
+float4 hdr_output_fragment(BlurVertexOutput input): SV_Target {
+    float4 color = t_sprite.Load(int3(input.position.xy, 0));
+    if (color.a <= 0.0) {
+        return float4(0.0, 0.0, 0.0, 0.0);
+    }
+    // The transfer applies to straight colour; DWM composites the result premultiplied.
+    float3 linear_rgb = extended_srgb_to_linear(color.rgb / color.a) * hdr_output_scale;
+    return float4(linear_rgb * color.a, color.a);
 }
