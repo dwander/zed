@@ -7,7 +7,7 @@ cbuffer GlobalParams: register(b0) {
     float subpixel_enhanced_contrast;
     uint is_bgr;
     // Display headroom (multiples of SDR white) HDR sprites are soft-clipped into; 1.0 on an SDR
-    // target, which compresses them into SDR.
+    // target (the app swaps in an SDR texture there anyway).
     float hdr_headroom;
     // scRGB value of SDR white (SDR white nits / 80) — the HDR output pass scales by it.
     float hdr_output_scale;
@@ -196,21 +196,23 @@ float3 linear_to_extended_srgb(float3 l) {
     return sign(l) * v;
 }
 
-// Soft-clip an HDR (extended sRGB) colour into the display's current headroom: from 80% of the
-// headroom up, an exponential knee approaches the headroom asymptotically. Scaled by the max
-// channel so hue is preserved. Headroom 1.0 (SDR output) compresses everything into SDR. Same
-// curve as the Metal shaders.
-static const float HDR_SOFT_KNEE_START = 0.8;
+// Soft-clip only what an HDR (extended sRGB) colour has *above* the display's current headroom.
+// Unlike the Metal shaders, which start an exponential knee at 80% of the headroom (Core Graphics'
+// tone mapping overshoots its target), Windows images arrive already tone-mapped to the display's
+// headroom by the app's decoder — a knee below the headroom would squash their highlight gradation
+// a second time. What is left above (the window moved to a dimmer display) approaches
+// `headroom * (1 + HDR_OVERSHOOT)` with slope 1 at the headroom; the panel clips the sliver.
+// Scaled by the max channel so hue is preserved.
+static const float HDR_OVERSHOOT = 0.1;
 
 float3 compress_to_headroom(float3 rgb, float headroom) {
-    float knee = headroom * HDR_SOFT_KNEE_START;
-    float range = headroom - knee;
     float3 lin = extended_srgb_to_linear(rgb);
     float m = max(lin.r, max(lin.g, lin.b));
-    if (m <= knee || range <= 0.0) {
+    if (m <= headroom) {
         return rgb;
     }
-    float squashed = knee + range * (1.0 - exp(-(m - knee) / range));
+    float range = headroom * HDR_OVERSHOOT;
+    float squashed = headroom + range * (1.0 - exp(-(m - headroom) / range));
     return linear_to_extended_srgb(lin * (squashed / m));
 }
 
