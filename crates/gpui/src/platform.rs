@@ -1276,8 +1276,10 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     fn background_appearance(&self) -> WindowBackgroundAppearance;
     fn set_title(&mut self, title: &str);
     fn set_background_appearance(&self, background_appearance: WindowBackgroundAppearance);
-    /// Present values above 1.0 as HDR (macOS EDR); `headroom` is the display's current EDR
-    /// headroom that HDR sprites are compressed into. Platforms without HDR output ignore it.
+    /// Present values above 1.0 as HDR (macOS EDR, Windows scRGB); `headroom` is the display's
+    /// current headroom that HDR sprites are compressed into. Called after every drawn frame with
+    /// whether that frame asked for HDR (`Window::set_hdr_content`), so implementations should be
+    /// cheap when nothing changed. Platforms without HDR output ignore it.
     fn set_hdr_content(&self, _enabled: bool, _headroom: f32) {}
     fn minimize(&self);
     fn zoom(&self);

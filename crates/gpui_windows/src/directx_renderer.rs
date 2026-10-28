@@ -770,8 +770,8 @@ impl DirectXRenderer {
     }
 
     /// Ask for HDR output (`enabled`) and report the display's current `headroom` (multiples of
-    /// SDR white) that HDR sprites are soft-clipped into. Called by the app every frame it draws,
-    /// so it only stores the request; the display is re-read at most every
+    /// SDR white) that HDR sprites are soft-clipped into. Called after every drawn frame, so it
+    /// mostly just stores the request; the display is re-read at most every
     /// [`HDR_PROBE_INTERVAL`], and the swap chain is switched only when the outcome changes.
     pub(crate) fn set_hdr_content(&mut self, enabled: bool, headroom: f32) {
         self.hdr.headroom = headroom.max(1.0);

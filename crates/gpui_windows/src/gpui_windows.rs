@@ -39,6 +39,7 @@ pub(crate) use vsync::*;
 pub(crate) use window::*;
 pub(crate) use wrapper::*;
 
+pub use hdr_display::{HdrDisplay, hdr_displays};
 pub use platform::WindowsPlatform;
 pub use window::set_drag_move_is_default;
 
