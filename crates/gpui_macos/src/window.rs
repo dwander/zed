@@ -1706,6 +1706,17 @@ impl PlatformWindow for MacWindow {
         }
     }
 
+    fn set_traffic_lights_hidden(&self, hidden: bool) {
+        // Same container as dimming: hiding it takes the buttons out of hit testing as well, so
+        // an invisible close button can't be clicked by accident.
+        let state = self.0.lock();
+        if let Some(buttons) = state.traffic_light_buttons()
+            && let Some(container) = MacWindowState::titlebar_container(&buttons.close)
+        {
+            container.setHidden(hidden);
+        }
+    }
+
     fn scale_factor(&self) -> f32 {
         self.0.as_ref().lock().scale_factor()
     }

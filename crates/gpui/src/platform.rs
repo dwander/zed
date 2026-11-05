@@ -1338,6 +1338,11 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     /// traffic lights.
     #[cfg(target_os = "macos")]
     fn set_traffic_lights_dimmed(&self, _dimmed: bool) {}
+    /// Hides (or restores) the macOS traffic-light buttons, for a window that shows nothing but
+    /// its content. Unlike dimming, hidden buttons can't be clicked. No-op where there are no
+    /// traffic lights.
+    #[cfg(target_os = "macos")]
+    fn set_traffic_lights_hidden(&self, _hidden: bool) {}
     fn show_character_palette(&self) {}
     fn titlebar_double_click(&self, _is_resizable: bool, _is_minimizable: bool) {}
     fn on_move_tab_to_new_window(&self, _callback: Box<dyn FnMut()>) {}
