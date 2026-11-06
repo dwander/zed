@@ -713,7 +713,7 @@ impl DirectXRenderer {
     /// the existing render target, reads it back, and converts BGRA to RGBA —
     /// or, while HDR output is on, undoes the scRGB pass so the image holds
     /// what the 8-bit pipeline would (HDR highlights clipped to white).
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(feature = "test-support")]
     pub(crate) fn render_to_image(
         &mut self,
         scene: &Scene,
@@ -1753,7 +1753,7 @@ impl DirectXRenderPipelines {
 impl DirectComposition {
     pub fn new(dxgi_device: &IDXGIDevice, hwnd: HWND) -> Result<Self> {
         let comp_device = get_comp_device(dxgi_device)?;
-        let comp_target = unsafe { comp_device.CreateTargetForHwnd(hwnd, true) }?;
+        let comp_target = unsafe { comp_device.CreateTargetForHwnd(hwnd, false) }?;
         let comp_visual = unsafe { comp_device.CreateVisual() }?;
 
         Ok(Self {
@@ -2686,7 +2686,7 @@ fn read_back_texture(
 /// One premultiplied scRGB pixel (RGBA, SDR white at `scale`) back to the premultiplied sRGB
 /// bytes the 8-bit pipeline would have drawn — the inverse of `hdr_output_fragment`, with HDR
 /// highlights clipped to white.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(feature = "test-support")]
 fn scrgb_to_srgb8(px: &[f32], scale: f32) -> [u8; 4] {
     let alpha = px[3].clamp(0.0, 1.0);
     let encode = |linear_premultiplied: f32| {
@@ -2761,7 +2761,6 @@ pub(crate) mod shader_resources {
         MonochromeSprite,
         SubpixelSprite,
         PolychromeSprite,
-        EmojiRasterization,
         BlurDownsample,
         Blur,
         BlurComposite,
@@ -2839,10 +2838,6 @@ pub(crate) mod shader_resources {
                     ShaderTarget::Vertex => POLYCHROME_SPRITE_VERTEX_BYTES,
                     ShaderTarget::Fragment => POLYCHROME_SPRITE_FRAGMENT_BYTES,
                 },
-                ShaderModule::EmojiRasterization => match target {
-                    ShaderTarget::Vertex => EMOJI_RASTERIZATION_VERTEX_BYTES,
-                    ShaderTarget::Fragment => EMOJI_RASTERIZATION_FRAGMENT_BYTES,
-                },
                 ShaderModule::BlurDownsample => match target {
                     ShaderTarget::Vertex => BLUR_DOWNSAMPLE_VERTEX_BYTES,
                     ShaderTarget::Fragment => BLUR_DOWNSAMPLE_FRAGMENT_BYTES,
@@ -2871,12 +2866,6 @@ pub(crate) mod shader_resources {
                 Direct3D::ID3DInclude, Hlsl::D3D_COMPILE_STANDARD_FILE_INCLUDE,
             };
 
-            let shader_name = if matches!(entry, ShaderModule::EmojiRasterization) {
-                "color_text_raster.hlsl"
-            } else {
-                "shaders.hlsl"
-            };
-
             let entry = format!(
                 "{}_{}\0",
                 entry.as_str(),
@@ -2893,7 +2882,7 @@ pub(crate) mod shader_resources {
             let mut compile_blob = None;
             let mut error_blob = None;
             let shader_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join(&format!("src/{}", shader_name))
+                .join("src/shaders.hlsl")
                 .canonicalize()?;
 
             let entry_point = PCSTR::from_raw(entry.as_ptr());
@@ -2945,7 +2934,6 @@ pub(crate) mod shader_resources {
                 ShaderModule::MonochromeSprite => "monochrome_sprite",
                 ShaderModule::SubpixelSprite => "subpixel_sprite",
                 ShaderModule::PolychromeSprite => "polychrome_sprite",
-                ShaderModule::EmojiRasterization => "emoji_rasterization",
                 ShaderModule::BlurDownsample => "blur_downsample",
                 ShaderModule::Blur => "blur",
                 ShaderModule::BlurComposite => "blur_composite",
