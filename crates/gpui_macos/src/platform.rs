@@ -511,10 +511,15 @@ impl MacPlatform {
 /// 레벨(`NSNormalWindowLevel` = 0)에 놓인다. 앱이 [`WindowKind::Floating`](gpui::WindowKind)
 /// 창(레벨 3)을 띄워 둔 상태면 패널이 **그 뒤에 깔려** 사용자 눈에는 아무 일도 일어나지
 /// 않은 것처럼 보인다. 모달 패널 레벨로 올려 어떤 경우에도 앞에 오게 한다.
+///
+/// 레벨이 앱 밖에도 걸린다는 게 대가다 — 패널을 연 채 다른 앱으로 가면 그 앱의 창 위에 남아
+/// 화면을 가린다(패널은 비활성화에 숨지 않는다). 그래서 앱의 플로팅 창(`NSPanel` 기본값)처럼
+/// 비활성인 동안은 숨기고, 돌아오면 그 자리에 다시 보이게 한다.
 fn raise_panel_above_floating_windows(panel: &NSSavePanel) {
     // NSModalPanelWindowLevel — 플로팅 창(3)보다 위, 팝업(101)보다 아래.
     const NS_MODAL_PANEL_WINDOW_LEVEL: NSWindowLevel = 8;
     panel.setLevel(NS_MODAL_PANEL_WINDOW_LEVEL);
+    panel.setHidesOnDeactivate(true);
 }
 
 impl Platform for MacPlatform {
