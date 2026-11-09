@@ -325,6 +325,11 @@ impl WindowsWindowInner {
     }
 
     fn handle_destroy_msg(&self, handle: HWND) -> Option<isize> {
+        self.destroyed.set(true);
+        // Revoke while the handle is still valid. The drop target holds an `Rc`
+        // to this window, so a revoke deferred past destruction fails and leaks
+        // the whole window state, renderer included.
+        unsafe { windows::Win32::System::Ole::RevokeDragDrop(handle).log_err() };
         let callback = { self.state.callbacks.close.take() };
         // Re-enable parent window if this was a modal dialog
         if let Some(parent_hwnd) = self.parent_hwnd {

@@ -305,7 +305,10 @@ impl WindowsPlatform {
             .read()
             .iter()
             .for_each(|handle| unsafe {
-                PostMessageW(Some(handle.as_raw()), message, wparam, lparam).log_err();
+                // Skip a window destroyed but not yet untracked.
+                if IsWindow(Some(handle.as_raw())).as_bool() {
+                    PostMessageW(Some(handle.as_raw()), message, wparam, lparam).log_err();
+                }
             });
     }
 
@@ -471,6 +474,11 @@ impl WindowsPlatform {
                     };
                     for hwnd in all_windows.read().iter() {
                         unsafe {
+                            // Destroyed, but not yet untracked (that waits for
+                            // `WM_GPUI_CLOSE_ONE_WINDOW` on the main thread).
+                            if !IsWindow(Some(hwnd.as_raw())).as_bool() {
+                                continue;
+                            }
                             if let Some(signal_at) = signal_at {
                                 if IsWindowVisible(hwnd.as_raw()).as_bool()
                                     && !IsIconic(hwnd.as_raw()).as_bool()

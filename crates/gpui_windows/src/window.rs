@@ -124,6 +124,10 @@ pub(crate) struct WindowsWindowInner {
     pub(crate) main_receiver: PriorityQueueReceiver<RunnableVariant>,
     pub(crate) platform_window_handle: HWND,
     pub(crate) parent_hwnd: Option<HWND>,
+    /// Set on `WM_DESTROY`. When the OS destroys the window (close button,
+    /// Alt+F4, owner destroyed) the `WindowsWindow` is dropped afterwards, and
+    /// its handle no longer names a window.
+    pub(crate) destroyed: Cell<bool>,
 }
 
 impl WindowsWindowState {
@@ -318,6 +322,7 @@ impl WindowsWindowInner {
             platform_window_handle: context.platform_window_handle,
             system_settings: WindowsSystemSettings::new(),
             parent_hwnd: context.parent_hwnd,
+            destroyed: Cell::new(false),
         }))
     }
 
@@ -639,21 +644,30 @@ impl rwh::HasDisplayHandle for WindowsWindow {
 impl Drop for WindowsWindow {
     fn drop(&mut self) {
         self.0.dialog_owner.close();
+        // Already destroyed by the OS: nothing left to hide or destroy, and the
+        // drop target was revoked in `WM_DESTROY`.
+        if self.0.destroyed.get() {
+            return;
+        }
         unsafe { ShowWindowAsync(self.0.hwnd, SW_HIDE).ok().log_err() };
         // `DestroyWindow` below sends `WM_SHOWWINDOW`; without a callback the
         // resulting visibility report has nothing to notify.
         self.0.state.callbacks.visibility_change.take();
+        // Hiding an active window deactivates it, and that report would reach
+        // the app after the window is already gone from it.
+        self.0.state.callbacks.active_status_change.take();
         // clone this `Rc` to prevent early release of the pointer
         let this = self.0.clone();
         self.0
             .executor
             .spawn(async move {
                 this.dialog_owner.when_idle().await;
-                let handle = this.hwnd;
-                unsafe {
-                    RevokeDragDrop(handle).log_err();
-                    DestroyWindow(handle).log_err();
+                // The OS may have destroyed it while we waited (e.g. its owner closed).
+                if this.destroyed.get() {
+                    return;
                 }
+                // `WM_DESTROY` revokes the drop target.
+                unsafe { DestroyWindow(this.hwnd).log_err() };
             })
             .detach();
     }
@@ -746,6 +760,12 @@ impl PlatformWindow for WindowsWindow {
     }
 
     fn mouse_position(&self) -> Point<Pixels> {
+        // Deferred callbacks (the deactivation sent while the window is being
+        // destroyed) can still ask after destruction; the handle can no longer
+        // convert coordinates, so answer with the last known position.
+        if self.0.destroyed.get() {
+            return self.state.mouse_position.get();
+        }
         let scale_factor = self.scale_factor();
         let point = unsafe {
             let mut point: POINT = std::mem::zeroed();
